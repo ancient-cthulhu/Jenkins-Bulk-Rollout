@@ -1,0 +1,33 @@
+// Complex / build-heavy repo. The Veracode autopackager cannot produce a clean
+// artifact here (multi-module build), so this repo supplies its own build via
+// buildSteps and pins the version that supports it.
+//
+// Contract:
+//   - buildSteps MUST leave scannable artifacts in verascan/ (SAST/Policy uploads it).
+//   - sourceDir is independent: it feeds SCA + IaC/secrets, so keep it on real source,
+//     NOT verascan.
+//   - buildSteps runs only on the Package Artifacts stage, i.e. default branch post-merge.
+@Library('veracode-pipeline@v2') _
+
+veracodePipeline(
+    appName:   'acme-corp/api-service',
+    sourceDir: 'src',
+    buildSteps: {
+        if (isUnix()) {
+            sh '''
+                set -e
+                rm -rf verascan && mkdir -p verascan
+                mvn -B -pl api,worker -am clean package -DskipTests
+                cp api/target/*.jar worker/target/*.jar verascan/
+            '''
+        } else {
+            powershell '''
+                $ErrorActionPreference = "Stop"
+                Remove-Item -Recurse -Force verascan -ErrorAction SilentlyContinue
+                New-Item -ItemType Directory -Force -Path verascan | Out-Null
+                mvn -B -pl api,worker -am clean package -DskipTests
+                Copy-Item api\\target\\*.jar, worker\\target\\*.jar verascan\\
+            '''
+        }
+    }
+)

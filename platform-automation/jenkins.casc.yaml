@@ -1,0 +1,56 @@
+# =============================================================================
+# Jenkins Configuration as Code  -  standalone Jenkins
+# =============================================================================
+# Registers the shared library once and defines the shared (root) credentials.
+# Organization Folders and the per-org SCA tokens are NOT created here. They are
+# created together by the trusted script veracode-onboard.groovy (folders + mint
+# Veracode token + bind folder credential), run from the Script Console or a
+# small admin job. Adding an org is a one-line change to ORGS in that script.
+#
+# Plugins: configuration-as-code, workflow-cps-global-lib, workflow-multibranch,
+#   github-branch-source, cloudbees-folder, credentials, credentials-binding,
+#   plain-credentials, ws-cleanup, timestamper.
+#
+# Secrets live in the Jenkins credential store (no external vault). Values here
+# are read from environment variables at apply time so they are not committed;
+# do NOT hardcode secret values in this file. The Veracode API id/key below are
+# what veracode-onboard.groovy uses to mint the per-org SCA tokens; the per-org
+# 'srcclr-api-token' folder credentials are written by that script, not here.
+# =============================================================================
+
+unclassified:
+  globalLibraries:
+    libraries:
+      - name: "veracode-pipeline"
+        defaultVersion: "v1"
+        implicit: false
+        allowVersionOverride: true
+        includeInChangesets: false
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "https://git.example.com/platform/veracode-pipeline.git"
+                credentialsId: "scm-readonly"
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          # Veracode API id/key: used by veracode-onboard.groovy to find/create
+          # each org's workspace and mint its Jenkins SCA agent token.
+          - string:
+              scope: GLOBAL
+              id: "veracode-api-id"
+              secret: "${VERACODE_API_ID}"
+          - string:
+              scope: GLOBAL
+              id: "veracode-api-key"
+              secret: "${VERACODE_API_KEY}"
+          # Shared read-only GitHub scan account: org discovery + library fetch.
+          # Planned hardening: replace with one GitHub App per org (folder-scoped).
+          - usernamePassword:
+              scope: GLOBAL
+              id: "scm-readonly"
+              username: "${SCM_SCAN_USER}"
+              password: "${SCM_SCAN_TOKEN}"

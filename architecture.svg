@@ -1,0 +1,112 @@
+<svg viewBox="0 0 1120 800" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrowblue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowgreen" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#059669"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1120" height="800" fill="#ffffff"/>
+  <text x="560" y="40" text-anchor="middle" font-size="22" font-weight="700" fill="#0f172a">Veracode + Jenkins Integration Architecture</text>
+  <text x="560" y="62" text-anchor="middle" font-size="13" fill="#64748b">Open-source Jenkins. One shared library, a separate scan pipeline per repo, triggered by the same SCM events.</text>
+
+  <!-- bulk PR arrow across the top -->
+  <polyline points="180,120 180,92 952,92 952,118" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <text x="566" y="86" text-anchor="middle" font-size="12" fill="#2563eb" font-weight="600">C10  bulk-PR: add 2-line Jenkinsfile (one-time per org)</text>
+
+  <!-- NEW zone -->
+  <rect x="30" y="110" width="300" height="180" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="180" y="132" text-anchor="middle" font-size="13" font-weight="700" fill="#1d4ed8">NEW: created by your team</text>
+  <rect x="50" y="146" width="260" height="58" rx="7" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="62" y="168" font-size="14" font-weight="700" fill="#0f172a">veracode-pipeline (repo)</text>
+  <text x="62" y="188" font-size="12" fill="#475569">Shared library: vars/veracodePipeline.groovy</text>
+  <rect x="50" y="216" width="260" height="58" rx="7" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="62" y="238" font-size="14" font-weight="700" fill="#0f172a">jenkins-platform (repo)</text>
+  <text x="62" y="258" font-size="12" fill="#475569">JCasC + onboard script + bulk-PR script</text>
+
+  <!-- Jenkins controller -->
+  <rect x="430" y="120" width="300" height="200" rx="10" fill="#f8fafc" stroke="#334155" stroke-width="1.5"/>
+  <text x="580" y="146" text-anchor="middle" font-size="15" font-weight="700" fill="#0f172a">Jenkins Controller</text>
+  <text x="450" y="176" font-size="13" fill="#334155">• Shared library registered, pinned @v1</text>
+  <text x="450" y="202" font-size="13" fill="#334155">• Credentials in Jenkins (root + per-org)</text>
+  <text x="450" y="228" font-size="13" fill="#334155">• One Organization Folder per org</text>
+  <text x="450" y="254" font-size="13" fill="#334155">• Auto-creates 1 pipeline job per repo</text>
+  <text x="450" y="286" font-size="12" fill="#64748b">Runs no builds itself</text>
+
+  <!-- secrets -->
+  <rect x="430" y="350" width="200" height="46" rx="7" fill="#fefce8" stroke="#ca8a04"/>
+  <text x="530" y="378" text-anchor="middle" font-size="12.5" fill="#854d0e">Jenkins credential store (encrypted)</text>
+
+  <!-- Agents -->
+  <rect x="430" y="480" width="300" height="130" rx="10" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="580" y="506" text-anchor="middle" font-size="15" font-weight="700" fill="#9a3412">Build agents (4 static)</text>
+  <text x="450" y="536" font-size="13" fill="#7c2d12">• SCA + IaC: light, no toolchain</text>
+  <text x="450" y="562" font-size="13" fill="#7c2d12">• SAST: build toolchains (by label)</text>
+  <text x="450" y="592" font-size="12" fill="#9a3412">Never the controller. Cache tools, cap waves.</text>
+
+  <!-- download sources -->
+  <rect x="70" y="486" width="250" height="86" rx="10" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="195" y="512" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">Download sources</text>
+  <text x="195" y="534" text-anchor="middle" font-size="11.5" fill="#475569">tools.veracode.com, sca-downloads,</text>
+  <text x="195" y="552" text-anchor="middle" font-size="11.5" fill="#475569">repo1.maven.org, pkg mirrors</text>
+
+  <!-- SCM -->
+  <rect x="800" y="120" width="290" height="210" rx="10" fill="#f8fafc" stroke="#334155" stroke-width="1.5"/>
+  <text x="945" y="146" text-anchor="middle" font-size="15" font-weight="700" fill="#0f172a">SCM</text>
+  <text x="945" y="166" text-anchor="middle" font-size="12" fill="#64748b">GitHub</text>
+  <text x="820" y="196" font-size="13" fill="#334155">Org / Team / Group</text>
+  <rect x="820" y="210" width="250" height="100" rx="7" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="832" y="234" font-size="13" font-weight="700" fill="#0f172a">Product repos (existing)</text>
+  <text x="832" y="256" font-size="12" fill="#475569">App teams' code, unchanged except</text>
+  <text x="832" y="274" font-size="12" fill="#475569">for one 2-line Jenkinsfile we add</text>
+  <text x="832" y="296" font-size="12" fill="#475569">(+ optional .veracode.yml)</text>
+
+  <!-- Veracode -->
+  <rect x="800" y="480" width="290" height="150" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+  <text x="945" y="506" text-anchor="middle" font-size="15" font-weight="700" fill="#065f46">Veracode Platform</text>
+  <text x="820" y="536" font-size="13" fill="#065f46">• App profile per repo (SAST / Policy)</text>
+  <text x="820" y="562" font-size="13" fill="#065f46">• SCA workspace per org</text>
+  <text x="820" y="588" font-size="13" fill="#065f46">• IaC/secrets results (optional upload)</text>
+
+  <!-- arrows -->
+  <!-- automation -> controller -->
+  <line x1="330" y1="240" x2="428" y2="200" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="372" y="212" text-anchor="middle" font-size="11" fill="#475569">apply</text>
+  <!-- controller -> library (fetch) -->
+  <line x1="428" y1="165" x2="332" y2="175" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="378" y="158" text-anchor="middle" font-size="11" fill="#475569">C3 fetch @v1</text>
+  <!-- controller -> SCM discover -->
+  <line x1="730" y1="170" x2="798" y2="170" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="765" y="162" text-anchor="middle" font-size="11" fill="#475569">C1 discover</text>
+  <!-- SCM -> controller webhook -->
+  <line x1="798" y1="205" x2="732" y2="205" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="765" y="222" text-anchor="middle" font-size="11" fill="#475569">C2 webhook</text>
+  <!-- controller -> agents provision -->
+  <line x1="580" y1="396" x2="580" y2="478" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="592" y="440" font-size="11" fill="#475569">C9 provision</text>
+  <!-- secrets -> controller -->
+  <line x1="530" y1="350" x2="530" y2="322" stroke="#ca8a04" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="556" y="342" font-size="11" fill="#854d0e">C11</text>
+  <!-- agents -> downloads -->
+  <line x1="428" y1="528" x2="322" y2="528" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="375" y="520" text-anchor="middle" font-size="11" fill="#475569">C4-C6 download</text>
+  <!-- agents -> veracode SCA -->
+  <line x1="730" y1="525" x2="798" y2="522" stroke="#059669" stroke-width="2" marker-end="url(#arrowgreen)"/>
+  <text x="765" y="516" text-anchor="middle" font-size="11" fill="#059669">C7 SCA</text>
+  <!-- agents -> veracode SAST -->
+  <line x1="730" y1="560" x2="798" y2="565" stroke="#059669" stroke-width="2" marker-end="url(#arrowgreen)"/>
+  <text x="765" y="582" text-anchor="middle" font-size="11" fill="#059669">C8 SAST/Policy</text>
+
+  <!-- legend -->
+  <rect x="70" y="650" width="1020" height="120" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="86" y="674" font-size="13" font-weight="700" fill="#0f172a">Connections</text>
+  <text x="86" y="698" font-size="12" fill="#334155">C1  Discovers repos via the shared scan account      C2  GitHub webhook (push/PR) triggers builds      C3  Controller fetches the shared library</text>
+  <text x="86" y="720" font-size="12" fill="#334155">C4-C6  Agents download CLI / SCA agent / API wrapper (optional: cache or pre-install on agents to skip re-download)      C7  SCA results upload to the org workspace</text>
+  <text x="86" y="742" font-size="12" fill="#334155">C8  SAST/Policy upload to the per-repo app profile      C9  Controller provisions agents      C10  One-time PR adds the Jenkinsfile</text>
+  <text x="86" y="762" font-size="12" fill="#334155">C11  Secrets live in the Jenkins credential store, encrypted, folder-scoped per org (no external vault)</text>
+</svg>
