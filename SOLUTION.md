@@ -1,4 +1,4 @@
-# Veracode + Jenkins Integration: Solution Document
+# Veracode + Jenkins Integration Solution Document
 
 Open-source Jenkins, many orgs. Veracode SCA, IaC/secrets, and SAST run automatically on every repo, without modifying or risking any team's existing build.
 
