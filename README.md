@@ -3,7 +3,7 @@
 Jenkins bulk rollout for scanning multiple orgs in GitHub with Veracode SCA, IaC/secrets, and SAST that run automatically on every repo, beside each team's build.
 
 <p align="center">
-  <img src="architecture.svg" alt="Veracode + Jenkins Architecture" width="1000">
+  <img src="architecture.svg" alt="Veracode + Jenkins Integration Architecture" width="1000">
   <br>
   <em>Reference architecture for centralized Jenkins-managed Veracode scanning across GitHub organizations.</em>
 </p>
