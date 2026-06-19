@@ -2,37 +2,36 @@
 // =============================================================================
 // veracodePipeline  -  Veracode Security Pipeline as a Jenkins Shared Library
 // =============================================================================
-// Single, tenant-wide pipeline template. Works on both Linux (bash) and Windows
+// Single, tenant-wide pipeline template. Works on Linux (bash) and Windows
 // (PowerShell) agents by switching on isUnix() at runtime.
 //
 // Scans:
-//   Agent-Based SCA           every build (token-gated, skips if absent)
-//   Container/IaC/Secrets      every build (directory scan of source)
-//   Policy Scan (SAST)         repo default branch only, post-merge (BRANCH_IS_PRIMARY)
+//   Agent-Based SCA          default branch + PRs (token-gated, skips if absent)
+//   Container/IaC/Secrets     default branch + PRs (directory scan of source)
+//   Policy Scan (SAST)        repo default branch only, post-merge, on a
+//                             label-restricted toolchain agent
 //
-// Call from a Jenkinsfile (or a centrally managed default Jenkinsfile):
+// Call from a 2-line Jenkinsfile:
 //   @Library('veracode-pipeline@v1') _
 //   veracodePipeline()
 //
-// Optional per-repo overrides (all also settable as folder/job env vars):
-//   veracodePipeline(
-//       appName:          'acme-corp/api-service',  // default: org/repo
-//       sourceDir:        'app',                    // default: repo root
-//       topLevelBranches: 'main',                   // fallback only; normally unset
-//       buildSteps:       { sh 'mvn -pl api -am package' }  // optional; see below
-//   )
+// Common config (all also settable as folder/job env vars in [brackets]):
+//   appName            'org/repo'                 [VERACODE_APP_NAME]
+//   sourceDir          'app'                      [VERACODE_SOURCE_DIR]
+//   sastAgentLabel     'veracode-sast-linux'      [VERACODE_SAST_AGENT_LABEL]   (required to run SAST)
+//   cliVersion         '2.x.y'                    [VERACODE_CLI_VERSION]
+//   cliSha256          '<hex>'                    [VERACODE_CLI_SHA256]
+//   wrapperVersion     '24.x.y'                   [VERACODE_WRAPPER_VERSION]
+//   scanFeatureBranches  false                    [VERACODE_SCAN_FEATURE_BRANCHES]
+//   gateSca/gateIac/gatePolicy  false/false/true  [VERACODE_GATE_SCA/IAC/POLICY]
+//   archiveIacFindings false                      [VERACODE_ARCHIVE_IAC]
+//   topLevelBranches   'main'                     [TOP_LEVEL_BRANCHES]  (fallback only)
+//   buildSteps         { ... }                    closure; see README "Complex builds"
 //
-// buildSteps (optional closure): replaces the autopackager in the Package
-// Artifacts stage for builds the autopackager cannot produce (multi-module,
-// monorepo, compiled stacks needing a real build, or prebuilt artifacts). The
-// closure MUST leave scannable artifacts in verascan/. sourceDir is unaffected
-// and still drives SCA + IaC/secrets, so keep it pointed at real source, not
-// verascan. When buildSteps is absent, the autopackager runs as before.
-//
-// Required credentials, resolved by ID through the folder hierarchy:
-//   veracode-api-id   (Secret text, required)
-//   veracode-api-key  (Secret text, required)
-//   srcclr-api-token  (Secret text, optional - SCA skips if absent)
+// Required credentials, resolved by id through the folder hierarchy:
+//   veracode-api-id   (Secret text, required for SAST/IaC-upload)
+//   veracode-api-key  (Secret text, required for SAST/IaC-upload)
+//   srcclr-api-token  (Secret text, optional - SCA skips cleanly if absent)
 // =============================================================================
 
 def call(Map config = [:]) {
@@ -47,394 +46,200 @@ def call(Map config = [:]) {
             disableConcurrentBuilds()
         }
 
-        environment {
-            VERACODE_API_ID  = credentials('veracode-api-id')
-            VERACODE_API_KEY = credentials('veracode-api-key')
-        }
-
         stages {
 
-            stage('Checkout') {
+            stage('Init & Checkout') {
                 steps {
                     checkout scm
                     script {
-                        def isCR = (env.CHANGE_ID != null)
+                        boolean isCR        = (env.CHANGE_ID != null)
+                        boolean isDefault   = resolveDefaultBranch(config)
+                        boolean topLevel    = isDefault && !isCR
+                        boolean scanFeature = asBool(config.scanFeatureBranches, env.VERACODE_SCAN_FEATURE_BRANCHES, false)
 
-                        // SAST/Policy runs only on the repo's DEFAULT branch, post-merge,
-                        // never on PRs. A merge to the default branch is a push with no
-                        // CHANGE_ID; PRs always set CHANGE_ID.
-                        // Primary signal: BRANCH_IS_PRIMARY, set by the GitHub
-                        // branch source for the repo's default branch in an org folder.
-                        // Optional override (only if a source does not populate it): set
-                        // TOP_LEVEL_BRANCHES (or topLevelBranches) to a branch-name regex.
-                        def overridePattern = (config.topLevelBranches ?: env.TOP_LEVEL_BRANCHES?.trim())
-                        def isDefaultBranch
-                        if (env.BRANCH_IS_PRIMARY != null) {
-                            isDefaultBranch = (env.BRANCH_IS_PRIMARY == 'true')
-                        } else if (overridePattern) {
-                            echo "BRANCH_IS_PRIMARY not set by the branch source; falling back to TOP_LEVEL_BRANCHES regex."
-                            isDefaultBranch = (env.BRANCH_NAME ==~ /(${overridePattern})/)
-                        } else {
-                            echo "WARNING: BRANCH_IS_PRIMARY not set and no TOP_LEVEL_BRANCHES override; SAST/Policy will be skipped. Set TOP_LEVEL_BRANCHES to the default branch name to enable it."
-                            isDefaultBranch = false
-                        }
-                        env.IS_TOP_LEVEL = (isDefaultBranch && !isCR) ? 'true' : 'false'
+                        // Only the default branch and PRs scan by default.
+                        boolean shouldScan  = isDefault || isCR || scanFeature
 
-                        // App profile is always org/repo, independent of branch. In a
-                        // multibranch job JOB_NAME is org/repo/branch (branch is the last,
-                        // URL-encoded segment), so drop the final path segment.
-                        def jobPath = env.JOB_NAME
-                        def orgRepo = jobPath?.contains('/') ? jobPath.substring(0, jobPath.lastIndexOf('/')) : jobPath
-                        env.VERACODE_APP_NAME_RESOLVED = (config.appName ?: env.VERACODE_APP_NAME?.trim()) ?: orgRepo
+                        env.VC_IS_PR        = isCR.toString()
+                        env.VC_IS_DEFAULT   = isDefault.toString()
+                        env.VC_IS_TOP_LEVEL = topLevel.toString()
+                        env.VC_SHOULD_SCAN  = shouldScan.toString()
 
-                        // Resolve the scan/package source once and pass it to every stage.
-                        env.VERACODE_SRC = (config.sourceDir ?: env.VERACODE_SOURCE_DIR?.trim()) ?: '.'
+                        // App profile is always org/repo, independent of branch.
+                        String jobPath = env.JOB_NAME
+                        String orgRepo = jobPath?.contains('/') ? jobPath.substring(0, jobPath.lastIndexOf('/')) : jobPath
+                        env.VC_APP_NAME = ((config.appName ?: env.VERACODE_APP_NAME?.trim()) ?: orgRepo)
+                        env.VC_SRC      = ((config.sourceDir ?: env.VERACODE_SOURCE_DIR?.trim()) ?: '.')
 
-                        echo "Branch: ${env.BRANCH_NAME} | Change request: ${isCR} | " +
-                             "Default branch: ${isDefaultBranch} | SAST/Policy eligible: ${env.IS_TOP_LEVEL} | " +
-                             "App profile: ${env.VERACODE_APP_NAME_RESOLVED} | " +
-                             "Source: ${env.VERACODE_SRC}"
+                        env.VC_SAST_LABEL  = (config.sastAgentLabel ?: env.VERACODE_SAST_AGENT_LABEL ?: '').trim()
+                        env.VC_CLI_VERSION = (config.cliVersion ?: env.VERACODE_CLI_VERSION ?: '').trim()
+                        env.VC_CLI_SHA256  = (config.cliSha256 ?: env.VERACODE_CLI_SHA256 ?: '').trim()
+                        env.VC_WRAPPER_VER = (config.wrapperVersion ?: env.VERACODE_WRAPPER_VERSION ?: '').trim()
+
+                        env.VC_GATE_SCA    = asBool(config.gateSca, env.VERACODE_GATE_SCA, false).toString()
+                        env.VC_GATE_IAC    = asBool(config.gateIac, env.VERACODE_GATE_IAC, false).toString()
+                        env.VC_GATE_POLICY = asBool(config.gatePolicy, env.VERACODE_GATE_POLICY, true).toString()
+                        env.VC_ARCHIVE_IAC = asBool(config.archiveIacFindings, env.VERACODE_ARCHIVE_IAC, false).toString()
+
+                        echo "Branch: ${env.BRANCH_NAME} | PR: ${isCR} | default: ${isDefault} | " +
+                             "SAST eligible: ${topLevel} | scan this build: ${shouldScan} | " +
+                             "app: ${env.VC_APP_NAME} | source: ${env.VC_SRC}"
                     }
                 }
             }
 
             // -----------------------------------------------------------------
-            // Install the Veracode CLI once (every build). Package Artifacts and
-            // the Container/IaC/Secrets scan reuse it from the shared workspace
-            // (Linux: ./veracode) or the user profile (Windows: %USERPROFILE%).
+            // Light source scans: SCA + IaC/secrets. Default branch and PRs only.
+            // Run on the general agent. The HMAC key is bound only on the default
+            // branch and only around the IaC upload, never on PR builds.
             // -----------------------------------------------------------------
-            stage('Install Veracode CLI') {
+            stage('Source Scans') {
+                when { expression { env.VC_SHOULD_SCAN == 'true' } }
                 steps {
-                    script {
-                        if (isUnix()) {
-                            sh '''
-                                echo "Installing Veracode CLI..."
-                                curl -fsS https://tools.veracode.com/veracode-cli/install | sh
-                                VERACODE_BIN="./veracode"
-                                command -v veracode >/dev/null 2>&1 && VERACODE_BIN="veracode"
-                                "$VERACODE_BIN" version
-                            '''
-                        } else {
-                            powershell '''
-                                $ProgressPreference = "silentlyContinue"
-                                Write-Host "Installing Veracode CLI..."
-                                Invoke-WebRequest -Uri "https://tools.veracode.com/veracode-cli/install.ps1" -OutFile "install.ps1"
-                                powershell -NoProfile -ExecutionPolicy Bypass -File ".\\install.ps1"
-                                $veracodeExe = Join-Path $env:USERPROFILE ".veracode-cli\\veracode.exe"
-                                if (!(Test-Path $veracodeExe)) { $veracodeExe = "veracode" }
-                                & $veracodeExe version
-                            '''
-                        }
-                    }
+                    script { installVeracodeCli() }
                 }
+                post { success { echo 'Source scans stage complete.' } }
             }
 
-            // -----------------------------------------------------------------
-            // Package Artifacts (default branch only, post-merge). Uses the Veracode CLI
-            // autopackager. Replace with your own build if you already produce
-            // deployable artifacts: build here, then point sourceDir at the build
-            // output or drop artifacts into verascan/.
-            //   Packaging Cheat Sheet: https://docs.veracode.com/cheatsheet/
-            // -----------------------------------------------------------------
-            stage('Package Artifacts') {
-                when { expression { env.IS_TOP_LEVEL == 'true' } }
-                steps {
-                    script {
-                        // Repo-supplied build wins. If the consumer passes a buildSteps
-                        // closure, run it instead of the autopackager. Contract: the closure
-                        // must leave scannable artifacts in verascan/ (the Policy Scan stage
-                        // unstashes and uploads that directory). Use this for builds the
-                        // autopackager cannot produce: multi-module Maven/Gradle, monorepos,
-                        // compiled stacks needing a real build first, or prebuilt artifacts.
-                        // sourceDir still drives SCA + IaC/secrets, so keep it on real source.
-                        if (config.buildSteps) {
-                            echo "Package Artifacts: running repo-supplied buildSteps (autopackager skipped)."
-                            config.buildSteps.call()
-                            if (isUnix()) {
-                                sh 'test -n "$(find verascan -type f 2>/dev/null)" || { echo "buildSteps left verascan/ empty; nothing to scan" >&2; exit 1; }'
-                            } else {
-                                powershell 'if (-not (Get-ChildItem -Recurse -File verascan -ErrorAction SilentlyContinue)) { Write-Error "buildSteps left verascan/ empty; nothing to scan"; exit 1 }'
-                            }
-                        } else if (isUnix()) {
-                            sh '''
-                                export VERACODE_API_KEY_ID="$VERACODE_API_ID"
-                                export VERACODE_API_KEY_SECRET="$VERACODE_API_KEY"
-                                SRC="$VERACODE_SRC"
-
-                                # Veracode CLI was installed in the Install Veracode CLI stage.
-                                VERACODE_BIN="./veracode"
-                                command -v veracode >/dev/null 2>&1 && VERACODE_BIN="veracode"
-
-                                echo "Running Veracode autopackager on: $SRC"
-                                rm -rf verascan && mkdir -p verascan
-                                "$VERACODE_BIN" package --source "$SRC" --output verascan --trust
-
-                                echo "Packaged artifacts:"
-                                find verascan -type f \\( \
-                                    -iname '*.war' -o \
-                                    -iname '*.jar' -o \
-                                    -iname '*.ear' -o \
-                                    -iname '*.zip' -o \
-                                    -iname '*.tar' -o \
-                                    -iname '*.tar.gz' -o \
-                                    -iname '*.tgz' -o \
-                                    -iname '*.apk' -o \
-                                    -iname '*.ipa' -o \
-                                    -iname '*.dll' -o \
-                                    -iname '*.exe' -o \
-                                    -iname '*.pdb' -o \
-                                    -iname '*.so' -o \
-                                    -iname '*.dylib' -o \
-                                    -iname '*.a' -o \
-                                    -iname '*.lib' \
-                                \\) | tee artifact_list.txt
-
-                                if [ ! -s artifact_list.txt ]; then
-                                    echo "No packaged artifacts found" >&2
-                                    exit 1
-                                fi
-
-                                echo "Total artifacts: $(wc -l < artifact_list.txt)"
-                            '''
-                        } else {
-                            powershell '''
-                                $env:VERACODE_API_KEY_ID = $env:VERACODE_API_ID
-                                $env:VERACODE_API_KEY_SECRET = $env:VERACODE_API_KEY
-                                $sourceDir = $env:VERACODE_SRC
-
-                                # Veracode CLI was installed in the Install Veracode CLI stage.
-                                $veracodeExe = Join-Path $env:USERPROFILE ".veracode-cli\\veracode.exe"
-                                if (!(Test-Path $veracodeExe)) { $veracodeExe = "veracode" }
-
-                                Write-Host "Running Veracode autopackager on: $sourceDir"
-                                Remove-Item -Recurse -Force verascan -ErrorAction SilentlyContinue
-                                New-Item -ItemType Directory -Force -Path verascan | Out-Null
-
-                                & $veracodeExe package --source "$sourceDir" --output verascan --trust
-
-                                Write-Host "Packaged files:"
-                                Get-ChildItem -Recurse verascan -File | Format-Table FullName, Length -AutoSize
-
-                                $artifactPatterns = @(
-                                    '*.war',
-                                    '*.jar',
-                                    '*.ear',
-                                    '*.zip',
-                                    '*.tar',
-                                    '*.tar.gz',
-                                    '*.tgz',
-                                    '*.apk',
-                                    '*.ipa',
-                                    '*.dll',
-                                    '*.exe',
-                                    '*.pdb',
-                                    '*.so',
-                                    '*.dylib',
-                                    '*.a',
-                                    '*.lib'
-                                )
-
-                                $artifacts = Get-ChildItem -Path verascan -Recurse -File |
-                                    Where-Object {
-                                        $fileName = $_.Name
-                                        $artifactPatterns | Where-Object { $fileName -like $_ }
-                                    }
-
-                                if (!$artifacts -or $artifacts.Count -eq 0) {
-                                    Write-Error "No packaged artifacts found"
-                                    exit 1
-                                }
-
-                                $artifacts.FullName | Out-File -FilePath artifact_list.txt -Encoding utf8
-
-                                Write-Host "Artifacts found:"
-                                Get-Content artifact_list.txt
-
-                                Write-Host "Total artifacts: $($artifacts.Count)"
-                            '''
-                        }
-                    }
-                }
-                post {
-                    success {
-                        stash name: 'verascan-bundle', includes: 'verascan/**'
-                        archiveArtifacts artifacts: 'artifact_list.txt', allowEmptyArchive: true
-                    }
-                }
-            }
-
-            stage('Veracode Security Scans') {
+            stage('SCA + IaC') {
+                when { expression { env.VC_SHOULD_SCAN == 'true' } }
                 parallel {
 
-                    // ---------------------------------------------------------
-                    // Agent-Based SCA: every build. Skips cleanly if the
-                    // srcclr-api-token credential is not configured.
-                    // ---------------------------------------------------------
+                    // Agent-Based SCA: skip if no token; surface real failures.
                     stage('Agent-Based SCA') {
                         steps {
                             script {
+                                boolean hasToken = false
                                 try {
                                     withCredentials([string(credentialsId: 'srcclr-api-token', variable: 'SRCCLR_API_TOKEN')]) {
+                                        hasToken = true
+                                        int rc
                                         if (isUnix()) {
-                                            sh '''
+                                            rc = sh(returnStatus: true, script: '''
+                                                set -o pipefail
                                                 echo "Running Agent-Based SCA scan..."
-                                                curl -sSL https://sca-downloads.veracode.com/ci.sh | sh -s -- scan --recursive --update-advisor
-                                            '''
+                                                # Prefer a pre-staged agent; else download.
+                                                if command -v srcclr >/dev/null 2>&1; then
+                                                    srcclr scan --recursive --update-advisor
+                                                else
+                                                    curl -sSL https://sca-downloads.veracode.com/ci.sh \\
+                                                        | sh -s -- scan --recursive --update-advisor
+                                                fi
+                                            ''')
                                         } else {
-                                            powershell '''
+                                            rc = powershell(returnStatus: true, script: '''
                                                 Set-ExecutionPolicy AllSigned -Scope Process -Force
                                                 $ProgressPreference = "silentlyContinue"
-                                                Write-Host "Downloading Veracode SCA agent (ci.ps1)..."
-                                                $client = New-Object System.Net.WebClient
-                                                $sca = $client.DownloadString("https://sca-downloads.veracode.com/ci.ps1")
-                                                Write-Host "Running Agent-Based SCA scan..."
-                                                Invoke-Command -ScriptBlock ([scriptblock]::Create($sca)) `
-                                                    -ArgumentList @("scan", "--recursive", "--update-advisor")
-                                            '''
+                                                if (Get-Command srcclr -ErrorAction SilentlyContinue) {
+                                                    srcclr scan --recursive --update-advisor
+                                                } else {
+                                                    $client = New-Object System.Net.WebClient
+                                                    $sca = $client.DownloadString("https://sca-downloads.veracode.com/ci.ps1")
+                                                    Invoke-Command -ScriptBlock ([scriptblock]::Create($sca)) `
+                                                        -ArgumentList @("scan","--recursive","--update-advisor")
+                                                }
+                                                exit $LASTEXITCODE
+                                            ''')
+                                        }
+                                        if (rc != 0) {
+                                            handleScanResult('SCA', rc, env.VC_GATE_SCA == 'true')
                                         }
                                     }
+                                } catch (org.jenkinsci.plugins.credentialsbinding.impl.CredentialNotFoundException nf) {
+                                    echo "Agent-Based SCA skipped: srcclr-api-token not configured for this folder."
                                 } catch (err) {
-                                    echo "Agent-Based SCA skipped (srcclr-api-token missing or scan error): ${err}"
+                                    if (hasToken) { throw err }   // a real binding/scan error must not be hidden
+                                    echo "Agent-Based SCA skipped: ${err}"
                                 }
                             }
                         }
                     }
 
-                    // ---------------------------------------------------------
-                    // Container/IaC/Secrets Scan: every build. Directory scan of
-                    // source (IaC misconfigurations + secrets). Non-gating by
-                    // default. To gate, drop the "|| echo" (Linux) or replace the
-                    // Write-Host with "exit $LASTEXITCODE" (Windows).
-                    // Secrets rules: container_scan: secret-rules: in veracode.yml
-                    // Platform results: analysis_on_platform: true in veracode.yml
-                    // ---------------------------------------------------------
-                    stage('Container/IaC/Secrets Scan') {
+                    // Container/IaC/Secrets: local scan; platform upload only on default branch.
+                    stage('Container/IaC/Secrets') {
                         steps {
                             script {
-                                if (isUnix()) {
-                                    sh '''
-                                        export VERACODE_API_KEY_ID="$VERACODE_API_ID"
-                                        export VERACODE_API_KEY_SECRET="$VERACODE_API_KEY"
-                                        SRC="$VERACODE_SRC"
-
-                                        # Veracode CLI was installed in the Install Veracode CLI stage.
-                                        VERACODE_BIN="./veracode"
-                                        command -v veracode >/dev/null 2>&1 && VERACODE_BIN="veracode"
-
-                                        echo "Running directory scan (IaC + secrets) on: $SRC"
-                                        "$VERACODE_BIN" scan \\
-                                            --type directory \\
-                                            --source "$SRC" \\
-                                            --format json \\
-                                            --output container_iac_secrets.json \\
-                                            || echo "Container/IaC/Secrets scan reported findings or errored (non-gating)."
-                                    '''
+                                boolean toPlatform = (env.VC_IS_DEFAULT == 'true')
+                                if (toPlatform) {
+                                    // Default branch: HMAC key bound only here, only now.
+                                    withCredentials([string(credentialsId: 'veracode-api-id', variable: 'VERACODE_API_ID'),
+                                                     string(credentialsId: 'veracode-api-key', variable: 'VERACODE_API_KEY')]) {
+                                        runIacScan(true)
+                                    }
                                 } else {
-                                    powershell '''
-                                        $ProgressPreference = "silentlyContinue"
-                                        # Keep native nonzero exits from throwing, so scan findings
-                                        # stay non-gating even if the agent sets this to $true.
-                                        $PSNativeCommandUseErrorActionPreference = $false
-
-                                        $env:VERACODE_API_KEY_ID = $env:VERACODE_API_ID
-                                        $env:VERACODE_API_KEY_SECRET = $env:VERACODE_API_KEY
-                                        $sourceDir = $env:VERACODE_SRC
-
-                                        # Veracode CLI was installed in the Install Veracode CLI stage.
-                                        $veracodeExe = Join-Path $env:USERPROFILE ".veracode-cli\\veracode.exe"
-                                        if (!(Test-Path $veracodeExe)) { $veracodeExe = "veracode" }
-
-                                        Write-Host "Running directory scan (IaC + secrets) on: $sourceDir"
-                                        & $veracodeExe scan --type directory --source "$sourceDir" --format json --output container_iac_secrets.json
-                                        if ($LASTEXITCODE -ne 0) {
-                                            Write-Host "Container/IaC/Secrets scan reported findings or errored (non-gating). Exit: $LASTEXITCODE"
-                                        }
-                                    '''
+                                    // PR/feature build: local-only, no tenant credentials.
+                                    runIacScan(false)
                                 }
                             }
                         }
                         post {
                             always {
-                                archiveArtifacts artifacts: 'container_iac_secrets.json', allowEmptyArchive: true
-                            }
-                        }
-                    }
-
-                    // ---------------------------------------------------------
-                    // Policy Scan: default branch only (post-merge). Production certification.
-                    // ---------------------------------------------------------
-                    stage('Policy Scan') {
-                        when { expression { env.IS_TOP_LEVEL == 'true' } }
-                        steps {
-                            unstash 'verascan-bundle'
-                            script {
-                                if (isUnix()) {
-                                    sh '''
-                                        BASE="https://repo1.maven.org/maven2/com/veracode/vosp/api/wrappers/vosp-api-wrappers-java"
-
-                                        echo "Resolving latest Java API Wrapper..."
-                                        VERSION=$(curl -fsSL "$BASE/maven-metadata.xml" | sed -n 's:.*<latest>\\(.*\\)</latest>.*:\\1:p')
-                                        [ -n "$VERSION" ] || { echo "Failed to get API Wrapper version" >&2; exit 1; }
-                                        echo "Version: $VERSION"
-
-                                        rm -rf .veracode && mkdir -p .veracode
-                                        curl -fsSL -o .veracode/dist.zip "$BASE/$VERSION/vosp-api-wrappers-java-$VERSION-dist.zip"
-                                        unzip -o -q .veracode/dist.zip -d .veracode
-
-                                        JAR=$(find .veracode -name 'VeracodeJavaAPI*.jar' | head -n 1)
-                                        [ -n "$JAR" ] || { echo "VeracodeJavaAPI.jar not found" >&2; exit 1; }
-
-                                        echo "Uploading to Veracode Platform Policy Scan..."
-                                        echo "Application: $VERACODE_APP_NAME_RESOLVED"
-                                        ls -la verascan
-
-                                        java -jar "$JAR" \\
-                                            -vid "$VERACODE_API_ID" \\
-                                            -vkey "$VERACODE_API_KEY" \\
-                                            -action UploadAndScan \\
-                                            -appname "$VERACODE_APP_NAME_RESOLVED" \\
-                                            -createprofile true \\
-                                            -autoscan true \\
-                                            -filepath "verascan" \\
-                                            -version "$BRANCH_NAME $BUILD_NUMBER"
-                                    '''
-                                } else {
-                                    powershell '''
-                                        Write-Host "Downloading Veracode Java API Wrapper..."
-                                        New-Item -ItemType Directory -Force -Path ".veracode" | Out-Null
-
-                                        [xml]$metadata = (Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/com/veracode/vosp/api/wrappers/vosp-api-wrappers-java/maven-metadata.xml").Content
-                                        $version = $metadata.metadata.versioning.latest
-                                        if (!$version) { Write-Error "Failed to get API Wrapper version" }
-
-                                        Write-Host "Downloading version: $version"
-                                        $wrapperUrl = "https://repo1.maven.org/maven2/com/veracode/vosp/api/wrappers/vosp-api-wrappers-java/$version/vosp-api-wrappers-java-$version-dist.zip"
-                                        Invoke-WebRequest -Uri $wrapperUrl -OutFile ".veracode\\dist.zip"
-                                        Expand-Archive -Path ".veracode\\dist.zip" -DestinationPath ".veracode" -Force
-
-                                        $jar = Get-ChildItem -Path ".veracode" -Recurse -File -Filter "VeracodeJavaAPI*.jar" | Select-Object -First 1
-                                        if (!$jar) { Write-Error "VeracodeJavaAPI.jar not found" }
-                                        Copy-Item -Force $jar.FullName "vosp-api-wrapper-java.jar"
-
-                                        $appName = $env:VERACODE_APP_NAME_RESOLVED
-
-                                        Write-Host "Uploading to Veracode Platform Policy Scan..."
-                                        Write-Host "Application: $appName"
-                                        Get-ChildItem verascan
-
-                                        & java -jar vosp-api-wrapper-java.jar `
-                                            -vid "$env:VERACODE_API_ID" `
-                                            -vkey "$env:VERACODE_API_KEY" `
-                                            -action UploadAndScan `
-                                            -appname "$appName" `
-                                            -createprofile true `
-                                            -autoscan true `
-                                            -filepath "verascan" `
-                                            -version "$env:BRANCH_NAME $env:BUILD_NUMBER"
-                                    '''
+                                script {
+                                    if (env.VC_ARCHIVE_IAC == 'true') {
+                                        archiveArtifacts artifacts: 'container_iac_secrets.json', allowEmptyArchive: true
+                                    } else {
+                                        echo 'IaC/secrets findings sent to scan output only; raw JSON not archived.'
+                                    }
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // SAST (Package + Policy): default branch only, on a toolchain agent.
+            // A fresh checkout runs on the SAST node so no large source stash is
+            // shipped between agents. HMAC creds are bound only for the wrapper
+            // upload, via a 0600 credentials file, never on the command line.
+            // -----------------------------------------------------------------
+            stage('SAST') {
+                when {
+                    beforeAgent true
+                    allOf {
+                        expression { env.VC_IS_TOP_LEVEL == 'true' }
+                        expression { env.VC_SAST_LABEL != null && env.VC_SAST_LABEL != '' }
+                    }
+                }
+                agent { label "${env.VC_SAST_LABEL}" }
+                stages {
+                    stage('Package Artifacts') {
+                        steps {
+                            script {
+                                checkout scm
+                                installVeracodeCli()
+                                if (config.buildSteps) {
+                                    // buildSteps runs with no Veracode creds in scope.
+                                    echo 'Package: running repo-supplied buildSteps (autopackager skipped).'
+                                    config.buildSteps.call()
+                                    ensureVerascanNonEmpty()
+                                } else {
+                                    runAutopackager()
+                                }
+                            }
+                        }
+                    }
+                    stage('Policy Scan') {
+                        steps {
+                            script { runPolicyScan() }
+                        }
+                    }
+                }
+                post { always { cleanWs(deleteDirs: true, notFailBuild: true) } }
+            }
+
+            // Loud, visible signal if SAST is due but no toolchain label is set.
+            stage('SAST routing check') {
+                when {
+                    allOf {
+                        expression { env.VC_IS_TOP_LEVEL == 'true' }
+                        expression { env.VC_SAST_LABEL == null || env.VC_SAST_LABEL == '' }
+                    }
+                }
+                steps {
+                    script {
+                        unstable('SAST skipped: no toolchain agent label set. ' +
+                                 'Set VERACODE_SAST_AGENT_LABEL on the org folder (or sastAgentLabel) to enable SAST.')
                     }
                 }
             }
@@ -445,9 +250,251 @@ def call(Map config = [:]) {
                 echo "Build finished with status: ${currentBuild.currentResult}"
                 cleanWs(deleteDirs: true, notFailBuild: true)
             }
-            failure {
-                echo "Veracode pipeline failed. Review the stage logs."
-            }
+            failure { echo 'Veracode pipeline failed. Review the stage logs.' }
         }
     }
+}
+
+// =============================================================================
+// Helpers (same vars file; callable from call()).
+// =============================================================================
+
+private boolean asBool(Object cfg, Object envVal, boolean dflt) {
+    def truthy = ['true', '1', 'yes', 'on']
+    if (cfg != null)            return truthy.contains(cfg.toString().trim().toLowerCase())
+    if (envVal?.toString()?.trim()) return truthy.contains(envVal.toString().trim().toLowerCase())
+    return dflt
+}
+
+// Default-branch detection. Primary signal is BRANCH_IS_PRIMARY from the GitHub
+// branch source; TOP_LEVEL_BRANCHES is an optional regex fallback.
+private boolean resolveDefaultBranch(Map config) {
+    String override = (config.topLevelBranches ?: env.TOP_LEVEL_BRANCHES?.trim())
+    if (env.BRANCH_IS_PRIMARY != null) {
+        return env.BRANCH_IS_PRIMARY == 'true'
+    } else if (override) {
+        echo 'BRANCH_IS_PRIMARY not set; falling back to TOP_LEVEL_BRANCHES regex.'
+        return (env.BRANCH_NAME ==~ /(${override})/)
+    }
+    echo 'WARNING: BRANCH_IS_PRIMARY not set and no TOP_LEVEL_BRANCHES override; SAST/Policy will be skipped.'
+    return false
+}
+
+// Prefer a pre-staged on-PATH veracode binary. Only download if absent, and
+// verify sha256 when one is supplied.
+private void installVeracodeCli() {
+    if (isUnix()) {
+        sh '''
+            set -e
+            if command -v veracode >/dev/null 2>&1; then
+                echo "Using pre-staged Veracode CLI: $(command -v veracode)"
+                veracode version || true
+                exit 0
+            fi
+            echo "WARNING: no pre-staged Veracode CLI; downloading. Pre-stage a pinned CLI on agents to avoid this."
+            curl -fsS https://tools.veracode.com/veracode-cli/install -o install_cli.sh
+            if [ -n "${VC_CLI_SHA256:-}" ]; then
+                echo "${VC_CLI_SHA256}  install_cli.sh" | sha256sum -c -
+            fi
+            sh install_cli.sh
+            ./veracode version
+        '''
+    } else {
+        powershell '''
+            $ProgressPreference = "silentlyContinue"
+            if (Get-Command veracode -ErrorAction SilentlyContinue) {
+                Write-Host "Using pre-staged Veracode CLI"
+                veracode version
+                exit 0
+            }
+            Write-Host "WARNING: no pre-staged Veracode CLI; downloading. Pre-stage a pinned CLI to avoid this."
+            Invoke-WebRequest -Uri "https://tools.veracode.com/veracode-cli/install.ps1" -OutFile "install.ps1"
+            if ($env:VC_CLI_SHA256) {
+                $h = (Get-FileHash -Algorithm SHA256 install.ps1).Hash.ToLower()
+                if ($h -ne $env:VC_CLI_SHA256.ToLower()) { Write-Error "CLI checksum mismatch"; exit 1 }
+            }
+            powershell -NoProfile -ExecutionPolicy Bypass -File ".\\install.ps1"
+            $veracodeExe = Join-Path $env:USERPROFILE ".veracode-cli\\veracode.exe"
+            if (!(Test-Path $veracodeExe)) { $veracodeExe = "veracode" }
+            & $veracodeExe version
+        '''
+    }
+}
+
+// IaC/secrets directory scan. withCreds=false means no platform credentials in
+// scope (PR/feature builds). On the default branch the caller wraps this in
+// withCredentials and passes true so results can reach the platform.
+private void runIacScan(boolean withCreds) {
+    if (isUnix()) {
+        sh """
+            ${withCreds ? 'export VERACODE_API_KEY_ID="\$VERACODE_API_ID"; export VERACODE_API_KEY_SECRET="\$VERACODE_API_KEY"' : 'echo "Local IaC/secrets scan (no platform credentials on this build)."'}
+            SRC="\$VC_SRC"
+            VERACODE_BIN="./veracode"; command -v veracode >/dev/null 2>&1 && VERACODE_BIN="veracode"
+            "\$VERACODE_BIN" scan --type directory --source "\$SRC" --format json \\
+                --output container_iac_secrets.json \\
+                || echo "IaC/secrets scan reported findings or errored (non-gating unless gateIac)."
+        """
+    } else {
+        powershell """
+            \$ProgressPreference = "silentlyContinue"
+            \$PSNativeCommandUseErrorActionPreference = \$false
+            ${withCreds ? '\$env:VERACODE_API_KEY_ID = \$env:VERACODE_API_ID; \$env:VERACODE_API_KEY_SECRET = \$env:VERACODE_API_KEY' : 'Write-Host "Local IaC/secrets scan (no platform credentials)."'}
+            \$src = \$env:VC_SRC
+            \$veracodeExe = Join-Path \$env:USERPROFILE ".veracode-cli\\veracode.exe"
+            if (!(Test-Path \$veracodeExe)) { \$veracodeExe = "veracode" }
+            & \$veracodeExe scan --type directory --source "\$src" --format json --output container_iac_secrets.json
+            if (\$LASTEXITCODE -ne 0) { Write-Host "IaC/secrets scan findings or error (non-gating unless gateIac). Exit: \$LASTEXITCODE" }
+        """
+    }
+    if (env.VC_GATE_IAC == 'true') {
+        // Gate on presence of findings; tune the predicate to your policy.
+        int findings = isUnix()
+            ? sh(returnStatus: true, script: 'grep -q "\\"severity\\"" container_iac_secrets.json 2>/dev/null')
+            : powershell(returnStatus: true, script: 'if (Select-String -Quiet -Path container_iac_secrets.json -Pattern "severity") { exit 0 } else { exit 1 }')
+        if (findings == 0) { error 'IaC/secrets gate: findings present and gateIac is enabled.' }
+    }
+}
+
+private void ensureVerascanNonEmpty() {
+    if (isUnix()) {
+        sh 'test -n "$(find verascan -type f 2>/dev/null)" || { echo "buildSteps left verascan/ empty" >&2; exit 1; }'
+    } else {
+        powershell 'if (-not (Get-ChildItem -Recurse -File verascan -ErrorAction SilentlyContinue)) { Write-Error "buildSteps left verascan/ empty"; exit 1 }'
+    }
+}
+
+private void runAutopackager() {
+    if (isUnix()) {
+        sh '''
+            set -e
+            SRC="$VC_SRC"
+            VERACODE_BIN="./veracode"; command -v veracode >/dev/null 2>&1 && VERACODE_BIN="veracode"
+            echo "Running Veracode autopackager on: $SRC"
+            rm -rf verascan && mkdir -p verascan
+            "$VERACODE_BIN" package --source "$SRC" --output verascan
+            find verascan -type f | tee artifact_list.txt
+            [ -s artifact_list.txt ] || { echo "No packaged artifacts found" >&2; exit 1; }
+            echo "Total artifacts: $(wc -l < artifact_list.txt)"
+        '''
+    } else {
+        powershell '''
+            $ErrorActionPreference = "Stop"
+            $src = $env:VC_SRC
+            $veracodeExe = Join-Path $env:USERPROFILE ".veracode-cli\\veracode.exe"
+            if (!(Test-Path $veracodeExe)) { $veracodeExe = "veracode" }
+            Write-Host "Running Veracode autopackager on: $src"
+            Remove-Item -Recurse -Force verascan -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force -Path verascan | Out-Null
+            & $veracodeExe package --source "$src" --output verascan
+            $artifacts = Get-ChildItem -Path verascan -Recurse -File
+            if (!$artifacts) { Write-Error "No packaged artifacts found"; exit 1 }
+            $artifacts.FullName | Out-File -FilePath artifact_list.txt -Encoding utf8
+            Write-Host "Total artifacts: $($artifacts.Count)"
+        '''
+    }
+    archiveArtifacts artifacts: 'artifact_list.txt', allowEmptyArchive: true
+}
+
+// Policy/SAST upload via the Java wrapper. Credentials come from a 0600
+// ~/.veracode/credentials file written from masked env vars (shell expansion,
+// not Groovy interpolation) and removed after the run. The wrapper version is
+// pinned when VC_WRAPPER_VER is set.
+private void runPolicyScan() {
+    withCredentials([string(credentialsId: 'veracode-api-id', variable: 'VERACODE_API_ID'),
+                     string(credentialsId: 'veracode-api-key', variable: 'VERACODE_API_KEY')]) {
+        if (isUnix()) {
+            sh '''
+                set -e
+                BASE="https://repo1.maven.org/maven2/com/veracode/vosp/api/wrappers/vosp-api-wrappers-java"
+                if [ -n "${VC_WRAPPER_VER:-}" ]; then
+                    VERSION="$VC_WRAPPER_VER"
+                else
+                    echo "WARNING: VC_WRAPPER_VER unset; resolving latest. Pin wrapperVersion for reproducibility."
+                    VERSION=$(curl -fsSL "$BASE/maven-metadata.xml" | sed -n 's:.*<latest>\\(.*\\)</latest>.*:\\1:p')
+                fi
+                [ -n "$VERSION" ] || { echo "No wrapper version" >&2; exit 1; }
+                echo "Java API Wrapper version: $VERSION"
+
+                rm -rf .veracode_jar && mkdir -p .veracode_jar
+                curl -fsSL -o .veracode_jar/dist.zip "$BASE/$VERSION/vosp-api-wrappers-java-$VERSION-dist.zip"
+                unzip -o -q .veracode_jar/dist.zip -d .veracode_jar
+                JAR=$(find .veracode_jar -name 'VeracodeJavaAPI*.jar' | head -n 1)
+                [ -n "$JAR" ] || { echo "wrapper jar not found" >&2; exit 1; }
+
+                # credentials file, 0600, from masked env vars; removed on exit.
+                umask 077
+                mkdir -p "$HOME/.veracode"
+                cleanup() { rm -f "$HOME/.veracode/credentials"; }
+                trap cleanup EXIT
+                {
+                    echo "[default]"
+                    echo "veracode_api_key_id = $VERACODE_API_ID"
+                    echo "veracode_api_key_secret = $VERACODE_API_KEY"
+                } > "$HOME/.veracode/credentials"
+
+                echo "Uploading to Veracode Policy Scan as: $VC_APP_NAME"
+                java -jar "$JAR" \\
+                    -action UploadAndScan \\
+                    -appname "$VC_APP_NAME" \\
+                    -createprofile true \\
+                    -autoscan true \\
+                    -filepath "verascan" \\
+                    -version "$BRANCH_NAME $BUILD_NUMBER"
+                RC=$?
+                if [ "${VC_GATE_POLICY:-true}" = "true" ] && [ "$RC" -ne 0 ]; then
+                    echo "Policy gate: wrapper returned $RC." >&2
+                    exit "$RC"
+                fi
+            '''
+        } else {
+            powershell '''
+                $ErrorActionPreference = "Stop"
+                $base = "https://repo1.maven.org/maven2/com/veracode/vosp/api/wrappers/vosp-api-wrappers-java"
+                if ($env:VC_WRAPPER_VER) { $version = $env:VC_WRAPPER_VER }
+                else {
+                    Write-Host "WARNING: VC_WRAPPER_VER unset; resolving latest. Pin wrapperVersion."
+                    [xml]$m = (Invoke-WebRequest -Uri "$base/maven-metadata.xml").Content
+                    $version = $m.metadata.versioning.latest
+                }
+                if (!$version) { Write-Error "No wrapper version" }
+                New-Item -ItemType Directory -Force -Path ".veracode_jar" | Out-Null
+                Invoke-WebRequest -Uri "$base/$version/vosp-api-wrappers-java-$version-dist.zip" -OutFile ".veracode_jar\\dist.zip"
+                Expand-Archive -Path ".veracode_jar\\dist.zip" -DestinationPath ".veracode_jar" -Force
+                $jar = Get-ChildItem -Path ".veracode_jar" -Recurse -File -Filter "VeracodeJavaAPI*.jar" | Select-Object -First 1
+                if (!$jar) { Write-Error "wrapper jar not found" }
+
+                # credentials file from masked env vars; removed in finally.
+                $vcDir = Join-Path $env:USERPROFILE ".veracode"
+                New-Item -ItemType Directory -Force -Path $vcDir | Out-Null
+                $credFile = Join-Path $vcDir "credentials"
+                try {
+                    Set-Content -Path $credFile -Value @(
+                        "[default]",
+                        "veracode_api_key_id = $env:VERACODE_API_ID",
+                        "veracode_api_key_secret = $env:VERACODE_API_KEY"
+                    )
+                    Write-Host "Uploading to Veracode Policy Scan as: $env:VC_APP_NAME"
+                    & java -jar $jar.FullName `
+                        -action UploadAndScan `
+                        -appname "$env:VC_APP_NAME" `
+                        -createprofile true `
+                        -autoscan true `
+                        -filepath "verascan" `
+                        -version "$env:BRANCH_NAME $env:BUILD_NUMBER"
+                    $rc = $LASTEXITCODE
+                    if ($env:VC_GATE_POLICY -ne "false" -and $rc -ne 0) {
+                        Write-Error "Policy gate: wrapper returned $rc."
+                        exit $rc
+                    }
+                } finally {
+                    Remove-Item -Force $credFile -ErrorAction SilentlyContinue
+                }
+            '''
+        }
+    }
+}
+
+private void handleScanResult(String name, int rc, boolean gate) {
+    if (gate) { error "${name} gate: scan returned ${rc} and gate is enabled." }
+    unstable("${name} scan returned ${rc} (non-gating).")
 }
