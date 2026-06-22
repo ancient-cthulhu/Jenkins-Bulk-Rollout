@@ -297,16 +297,21 @@ def call(Map config = [:]) {
                         }
                     }
                     try {
-                        // Override the generic GitHub branch source status message with
-                        // something that tells the developer what actually ran.
-                        githubNotify(
-                            status: ghStatus,
-                            description: statusMsg,
-                            context: 'Veracode Security Scan'
+                        // Use the Checks API (publishChecks) to report scan results
+                        // back to GitHub with a meaningful description.
+                        def conclusion = ghStatus == 'SUCCESS' ? 'SUCCESS'
+                                       : ghStatus == 'FAILURE' ? 'FAILURE'
+                                       : 'NEUTRAL'
+                        publishChecks(
+                            name: 'Veracode Security Scan',
+                            title: statusMsg,
+                            summary: statusMsg,
+                            status: 'COMPLETED',
+                            conclusion: conclusion
                         )
                     } catch (ignored) {
-                        // githubNotify is only available when the build was triggered
-                        // by a GitHub event (PR/push). Suppress on manual/scheduled runs.
+                        // publishChecks is only available when triggered by a
+                        // GitHub event. Suppress on manual/scheduled runs.
                     }
                 }
             }
