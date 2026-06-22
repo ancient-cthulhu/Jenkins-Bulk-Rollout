@@ -18,11 +18,9 @@ Usage:
     # then execute (multi-org / non-dry-run requires --yes as a blast-radius gate):
     python3 bulk_add_jenkinsfile.py --orgs acme-corp acme-labs --lib-version v1 --yes
     # direct commit (respects protection), with audit log:
-    python3 bulk_add_jenkinsfile.py --orgs acme-corp --lib-version v1 \\
-        --mode direct --yes --audit-log rollout.jsonl
+    python3 bulk_add_jenkinsfile.py --orgs acme-corp --lib-version v1 --mode direct --yes --audit-log rollout.jsonl
     # scope / skips:
-    python3 bulk_add_jenkinsfile.py --orgs acme-corp --lib-version v1 \\
-        --include repo-a repo-b --skip-archived --skip-forks --dry-run
+    python3 bulk_add_jenkinsfile.py --orgs acme-corp --lib-version v1 --include repo-a repo-b --skip-archived --skip-forks --dry-run
 
 For GitHub Enterprise, pass --api-base https://ghe.example.com/api/v3
 """
@@ -38,7 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BRANCH = "chore/veracode-jenkinsfile"
+BRANCH = "chore/add-veracode-pipeline"
 PATH = "Jenkinsfile"
 COMMIT_MSG = "ci: add Veracode security pipeline (shared library)"
 PR_TITLE = "Add Veracode security pipeline"
@@ -59,6 +57,16 @@ PR_BODY = (
     "Adds a 2-line `Jenkinsfile` that invokes the central `veracode-pipeline` "
     "shared library. All scan logic lives in the library; this file only pins "
     "the version. No build behavior of this repo is changed."
+)
+
+
+DELETE_BRANCH    = "chore/remove-veracode-pipeline"
+DELETE_COMMIT    = "ci: remove Veracode security pipeline"
+DELETE_PR_TITLE  = "Remove Veracode security pipeline"
+DELETE_PR_BODY   = (
+    "Removes the `Jenkinsfile` that invoked the central `veracode-pipeline` "
+    "shared library. After merging, Veracode scanning will no longer run on "
+    "this repo."
 )
 
 
@@ -159,7 +167,14 @@ class GitHub:
 def run(args):
     gh = GitHub(args.token, args.api_base)
     include = set(args.include or [])
-    exclude = set(args.exclude or [])
+    # Repos that are themselves Veracode integrations or platform tooling --
+    # not product repos and should never receive a Jenkinsfile PR.
+    DEFAULT_EXCLUDE = {
+        "veracode",           # Veracode GitHub integration app repo
+        "veracode-pipeline",  # shared library (this integration)
+        "jenkins-platform",   # platform automation (this integration)
+    }
+    exclude = DEFAULT_EXCLUDE | set(args.exclude or [])
     audit = open(args.audit_log, "a", encoding="utf-8") if args.audit_log else None
 
     grand = {"created": [], "skipped": [], "failed": []}
@@ -207,6 +222,33 @@ def process_org(gh, org, args, include, exclude, per, audit):
 
         default_branch = repo.get("default_branch") or "main"
 
+        if args.delete:
+            # --delete mode: open a PR to remove the Jenkinsfile
+            status, _, _ = gh._req("GET", f"/repos/{full}/contents/{PATH}?ref={default_branch}")
+            if status != 200:
+                per["skipped"].append((full, "no Jenkinsfile -- nothing to delete"))
+                continue
+            if args.dry_run:
+                per["created"].append((full, "DRY-RUN would open delete PR"))
+                _audit(audit, full, "delete", "dry-run", default_branch)
+                continue
+            try:
+                ensure_delete_pr(gh, full, default_branch)
+                per["created"].append((full, "delete PR open"))
+                _audit(audit, full, "delete", "pr-open", default_branch)
+                print(f"  {full}: delete PR open")
+            except Blocked as e:
+                per["skipped"].append((full, f"blocked: {e}"))
+                _audit(audit, full, "delete", f"blocked: {e}", default_branch)
+                print(f"  {full}: blocked by protection ({e})", file=sys.stderr)
+            except Exception as e:
+                per["failed"].append((full, str(e)))
+                _audit(audit, full, "delete", f"failed: {e}", default_branch)
+                print(f"  {full}: FAILED {e}", file=sys.stderr)
+            time.sleep(WRITE_PAUSE)
+            continue
+
+        # Normal add mode
         status, _, _ = gh._req("GET", f"/repos/{full}/contents/{PATH}?ref={default_branch}")
         if status == 200:
             per["skipped"].append((full, "Jenkinsfile exists"))
@@ -294,6 +336,55 @@ def ensure_pr(gh, full, base_branch, lib_version):
         raise RuntimeError(f"PR create failed: {status} {payload}")
 
 
+def ensure_delete_pr(gh, full, base_branch):
+    """Open a PR that removes the Jenkinsfile. Resumable: reuses existing branch/PR."""
+    owner = full.split("/", 1)[0]
+
+    # Get base SHA
+    status, ref, _ = gh._req("GET", f"/repos/{full}/git/ref/heads/{base_branch}")
+    if status != 200:
+        raise RuntimeError(f"cannot read base ref: {status} {ref}")
+    base_sha = ref["object"]["sha"]
+
+    # Create delete branch if it does not exist
+    status, _, _ = gh._req("GET", f"/repos/{full}/git/ref/heads/{DELETE_BRANCH}")
+    if status != 200:
+        status, payload, _ = gh._req(
+            "POST", f"/repos/{full}/git/refs",
+            {"ref": f"refs/heads/{DELETE_BRANCH}", "sha": base_sha},
+        )
+        if status not in (200, 201):
+            raise RuntimeError(f"branch create failed: {status} {payload}")
+
+    # Delete the file on the branch if it is still there
+    status, file_info, _ = gh._req("GET", f"/repos/{full}/contents/{PATH}?ref={DELETE_BRANCH}")
+    if status == 200:
+        file_sha = file_info["sha"]
+        status, payload, _ = gh._req(
+            "DELETE", f"/repos/{full}/contents/{urllib.parse.quote(PATH)}",
+            {"message": DELETE_COMMIT, "sha": file_sha, "branch": DELETE_BRANCH},
+        )
+        if _blocked(status, payload):
+            raise Blocked(payload.get("message", "protected branch"))
+        if status not in (200, 201, 204):
+            raise RuntimeError(f"file delete failed: {status} {payload}")
+
+    # Ensure an open PR exists
+    q = urllib.parse.quote(f"{owner}:{DELETE_BRANCH}")
+    status, prs, _ = gh._req("GET", f"/repos/{full}/pulls?state=open&head={q}")
+    if status == 200 and isinstance(prs, list) and prs:
+        return  # PR already open
+
+    status, payload, _ = gh._req(
+        "POST", f"/repos/{full}/pulls",
+        {"title": DELETE_PR_TITLE, "head": DELETE_BRANCH,
+         "base": base_branch, "body": DELETE_PR_BODY},
+    )
+    if status not in (200, 201):
+        raise RuntimeError(f"PR create failed: {status} {payload}")
+
+
+
 def direct_commit(gh, full, base_branch, lib_version):
     """Commit to the default branch. Respects protection: blocked -> Blocked."""
     content = JENKINSFILE_TEMPLATE.format(lib=lib_version)
@@ -369,6 +460,10 @@ def parse_args(argv):
     p.add_argument("--exclude", nargs="*", help="skip these repo names")
     p.add_argument("--skip-archived", action="store_true")
     p.add_argument("--skip-forks", action="store_true")
+    p.add_argument("--delete", action="store_true",
+                   help="open a PR to REMOVE the Jenkinsfile from each repo "
+                        "that has one (reverse of the default add operation). "
+                        "Use --dry-run first to see what would be affected.")
     p.add_argument("--audit-log", help="append per-repo JSONL audit records to this file")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--yes", action="store_true",

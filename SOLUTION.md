@@ -39,8 +39,8 @@ Connection legend:
 
 | # | New artifact | Location | Purpose |
 |---|--------------|----------|---------|
-| 1 | `veracode-pipeline` repo | New Git repo | Shared library `vars/veracodePipeline.groovy`, tagged `v1` |
-| 2 | `jenkins-platform` repo | New Git repo | JCasC, the `veracode-onboard` script, bulk-PR script |
+| 1 | `veracode-pipeline` repo | GitHub org (see below) | Shared library `vars/veracodePipeline.groovy`, tagged `v1` |
+| 2 | `jenkins-platform` repo | GitHub org (see below) | JCasC, the `veracode-onboard` script, bulk-PR script |
 | 3 | Library registration | Jenkins controller | Points Jenkins at repo 1, default version `v1` |
 | 4 | Root credentials | Jenkins controller (root) | `veracode-api-id`, `veracode-api-key`, `scm-readonly` |
 | 5 | Org folder per org | Jenkins controller | Created by `veracode-onboard`; discovers and scans each org's repos |
@@ -49,6 +49,37 @@ Connection legend:
 | 8 | App profiles + workspaces | Veracode platform | One profile per repo; one workspace per org |
 
 Only repos 1 and 2 are new. Existing product repos change by one file each.
+
+### Where do repos 1 and 2 live?
+
+Repos `veracode-pipeline` and `jenkins-platform` must live in a GitHub org that
+the `scm-readonly` PAT has access to. 
+
+**Two valid layouts:**
+
+**Option A - Dedicated platform org (recommended for production)**
+
+A separate org (e.g. `your-company-platform`) owns the two repos. The `scm-readonly`
+PAT is a member of that org plus every product org being scanned. Clean separation
+between platform infrastructure and product code.
+
+**Option B - Same org as the scanned repos (simplest)**
+
+The two repos live inside the org being scanned. One PAT, one org. Fine for a
+pilot or single-org deployment.
+
+In either case, set `PLATFORM_ORG` in `rollout.example.py` to whichever org
+hosts these two repos, and set `SCAN_ORGS` to the list of orgs Jenkins will scan.
+They can be the same value or different.
+
+### The `scm-readonly` credential
+
+This is a GitHub PAT stored in Jenkins as a **username + token** credential
+(id: `scm-readonly`). It needs `repo` and `read:org` scopes and must be a member
+of every org it touches. Jenkins uses it for three things:
+1. Fetching the shared library (`veracode-pipeline`) at build time
+2. Discovering repos in each scanned org (Organization Folder)
+3. Checking out source code on agents
 
 ---
 
@@ -84,53 +115,115 @@ All of the above live in the Jenkins credential store (encrypted at rest with th
 
 ## 5. Rollout plan (in order)
 
-### Phase 0: Pre-reqs (mostly done)
-- Confirm the SAST worker pool carries each language's build toolchain (only open item).
-- Have ready: Veracode API id/key + SCA token(s); a read-only GitHub scan PAT (`scm-readonly`) and a push token for the one-time rollout (scopes in section 4).
+### Phase 0: Pre-reqs
+- Confirm the SAST worker pool carries each language's build toolchain.
+- Have ready: Veracode API id/key; a GitHub PAT for the scan account (`scm-readonly`,
+  scopes: `repo`, `read:org`) and a push token for the one-time repo rollout (scope: `repo`).
+- Install the plugins listed in section 4 on the controller.
+- Stand up agents (label SAST-capable ones); confirm egress to the URLs in section 4.
 
-### Phase 1: Build the assets
-1. Create `veracode-pipeline` repo, add `vars/veracodePipeline.groovy`, `git tag v1`.
-2. Create `jenkins-platform` repo with the JCasC, the `veracode-onboard` script, and bulk-PR script.
-3. Install the plugins (section 4) on the controller.
-4. Stand up the  agents (label the SAST-capable ones); confirm egress.
+### Phase 1: One-shot setup (rollout.py)
 
-### Phase 2: Wire Jenkins
-5. Add root credentials `veracode-api-id`, `veracode-api-key`, `scm-readonly`. All in the Jenkins credential store. No per-org SCA token values are needed here; `veracode-onboard` mints them in Phase 3.
-6. Register the shared library: Manage Jenkins → System → Global Pipeline Libraries → name `veracode-pipeline`, default version `v1`, allow override on, load implicitly off, retrieval Modern SCM with `scm-readonly`.
+Copy `platform-automation/rollout.example.py` to `rollout.py` (gitignored -- safe to put real values in), fill in the CONFIG block at the top, then run:
 
-### Phase 3: Connect SCM
-7. Run `veracode-onboard.groovy` as a trusted system script (Script Console, or an admin job with an "Execute system Groovy script" step). In one pass, for every org in `ORGS`, it creates the Organization Folder, mints that org's Jenkins SCA token from Veracode, and binds it as the folder credential `srcclr-api-token`. Needs egress to `api.veracode.com`.
-8. Ensure each org has a webhook to the controller (auto via the scan account if its PAT has `admin:org_hook`, or create it manually).
+```bash
+python3 rollout.py
+```
 
-### Phase 4: Deliver to repos
-10. Per org, run the bulk-PR script (dry-run first), then merge:
-    ```
-    export GITHUB_TOKEN=...        # push token, repo + PR scope
-    python3 bulk_add_jenkinsfile.py --org <ORG> --lib-version v1 --dry-run
-    python3 bulk_add_jenkinsfile.py --org <ORG> --lib-version v1 --skip-archived --skip-forks
-    ```
-    The script is idempotent (skips repos that already have the file or branch).
+The CONFIG block covers:
+- `PLATFORM_ORG` -- the GitHub org that will host `veracode-pipeline` and `jenkins-platform`
+- `SCAN_ORGS` -- list of orgs Jenkins will scan (can be the same as `PLATFORM_ORG`)
+- `GITHUB_TOKEN` -- PAT with `repo` scope for creating the two platform repos
+- `VC_API_ID` / `VC_API_KEY` -- Veracode API credentials
+- `SCM_USER` / `SCM_TOKEN` -- the `scm-readonly` GitHub PAT (stored in Jenkins)
+- `JENKINS_URL` / `JENKINS_USER` / `JENKINS_TOKEN` -- Jenkins admin access
 
-### Phase 5: Pilot
-11. Point one org at non-prod repos, pinned to `@veracode-pipeline@main` (canary).
-12. Verify on a feature branch / PR: SCA + IaC run; no Package/SAST.
-13. Verify on a default-branch merge: Package + SAST/Policy run; results in the platform; SCA in the right workspace; IaC JSON archived.
-14. Run the declarative linter once against the 2-line Jenkinsfile on the controller.
+In a single run this script:
+1. Creates the `veracode-pipeline` repo in your platform org, pushes the shared library, and tags it `v1`
+2. Creates the `jenkins-platform` repo and pushes all platform automation
+3. Upserts `veracode-api-id`, `veracode-api-key`, and `scm-readonly` credentials in Jenkins
+4. Configures the GitHub Server entry in Jenkins (enables webhook auto-registration)
+5. Registers the `veracode-pipeline` shared library on the controller
+6. Runs `veracode-onboard.groovy` via the Script Console, which creates one Organization Folder per org, mints each org's Veracode SCA workspace token, and binds it as `srcclr-api-token`
 
-### Phase 6: Roll out
-15. Enable SCA + IaC across all orgs (immediate, no toolchain dependency).
-16. Enable SAST org by org as the toolchains on the SAST pool are confirmed.
-17. Promote all orgs from canary to the pinned `@v1`.
+Re-running is safe: existing repos are skipped, credentials are upserted, the onboarding script is idempotent.
 
-### Phase 7: Operate
-- Ship library changes as new tags (`v2`), promote orgs in waves; clean rollback by re-pinning.
-- Monitor org-folder scan health, agent saturation, and Veracode API throttling on first-run waves.
-- Apply the auth hardening (env-var creds for the wrapper instead of `-vkey` on the command line).
-- Because all secrets live in the Jenkins credential store, treat the controller as the secret custodian: restrict admin access, encrypt backups, protect `$JENKINS_HOME/secrets`, and keep SCA tokens folder-scoped per org.
-- Rotate the shared scan PAT on a schedule; it is the one broad standing credential, which is the main reason to move to per-org GitHub Apps later.
-- Watch saturation on first-run waves. Caching or pre-installing the Veracode tools (CLI, SCA agent, Java wrapper) on the agents is optional and avoids re-downloading them every build.
+### Phase 2: Deliver Jenkinsfiles to repos
 
-**Add a new org later:** add a line to the `ORGS` list in `veracode-onboard.groovy` and re-run it (creates the folder, mints the token, binds the credential), then run the bulk-PR script. The scan PAT must be a member of the new org. Nothing else.
+Per org, run the bulk-PR script (dry-run first), then merge:
+
+```bash
+export GITHUB_TOKEN=<push-token>
+python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --dry-run
+python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --skip-archived --skip-forks --yes
+```
+
+The script is idempotent (skips repos that already have the file or branch).
+
+### Phase 3: Pilot
+- Point one org at non-prod repos, pinned to `@veracode-pipeline@main` (canary).
+- Verify on a feature branch / PR: SCA + IaC run; no SAST.
+- Verify on a default-branch merge: SAST/Policy runs; results appear in the platform;
+  SCA lands in the right workspace; IaC JSON archived.
+
+### Phase 4: Roll out
+
+This phase happens after the pilot is confirmed green on one org.
+
+**Enable SCA + IaC across all orgs (immediate, no toolchain dependency)**
+
+SCA and IaC/secrets run directly on the checked-out source -- they do not compile
+the code, so no build toolchain is needed on the agent. They work on every repo
+immediately after the Jenkinsfile PR is merged. Run the bulk-PR script for each
+remaining org and merge the PRs. Scanning starts on the next push.
+
+**Enable SAST org by org as the toolchains on the SAST pool are confirmed**
+
+SAST requires the source code to be compiled. The pipeline handles this
+automatically using Docker -- it detects the language and pulls the right container
+image (Maven for Java, .NET SDK for C#, etc.). Before enabling SAST on an org,
+confirm that:
+- Docker is available on the Jenkins agent (see library README -- Agent requirements)
+- The `docker-workflow` plugin is installed on the controller
+- The agent can reach Docker Hub (or your internal registry) to pull images
+
+If Docker is not available, the agent must have the language toolchain installed
+directly, or repos must supply their own `buildSteps` in the Jenkinsfile.
+
+Enable SAST for one org first, watch the first few builds in Jenkins and in the
+Veracode platform, confirm artifacts are being uploaded and scans are completing,
+then move to the next org.
+
+**Promote all orgs from canary to the pinned `@v1`**
+
+During the pilot, the test org's Jenkinsfile was pinned to `@main` (the canary
+branch) so you could iterate on the library without tagging. Once everything is
+confirmed working, change all Jenkinsfiles to point at the stable tag:
+
+```groovy
+@Library('veracode-pipeline@v1') _
+veracodePipeline()
+```
+
+The bulk-PR script already uses `v1` by default (`--lib-version v1`). Any repo
+still pointing at `@main` should be updated. From this point on, library changes
+go through a proper tag cycle: develop on a branch, canary one org with
+`@veracode-pipeline@<branch>`, tag as `v2` when confirmed, promote orgs in waves.
+Roll back any org by re-pinning its Jenkinsfile to `@v1` -- the old tag is always
+intact.
+
+
+### Phase 5: Operate
+- Ship library changes as new tags (`v2`), promote orgs in waves; roll back by re-pinning.
+- Monitor org-folder scan health, agent saturation, and Veracode API throttling on
+  first-run waves.
+- Rotate the shared scan PAT on a schedule.
+- Treat the Jenkins controller as the secret custodian: restrict admin access,
+  encrypt backups, protect `$JENKINS_HOME/secrets`.
+
+**Add a new org later:** add it to `SCAN_ORGS` in `rollout.py` and re-run it
+(creates the folder, mints the token, binds the credential), then run the bulk-PR
+script for the new org. The scan PAT must be a member of the new org. Nothing else.
 
 ---
 
@@ -142,12 +235,22 @@ All of the above live in the Jenkins credential store (encrypted at rest with th
 | Merge to default branch | yes | yes | yes |
 
 - SCA and IaC/secrets are non-gating by default (report, do not fail the build).
-- SAST runs only on the default branch, detected via `BRANCH_IS_PRIMARY`; a merge is a push to that branch with no change-request id, so PRs are always excluded.
-- App profile per repo = `org/repo`; Veracode filters/groups via Git metadata. SCA results land in the per-org workspace selected by that org's token.
+- SAST runs only on the default branch, detected via `BRANCH_IS_PRIMARY`; PRs are always excluded.
+- App profile per repo = `org/repo`. SCA results land in the per-org workspace selected by that org's token.
+- SAST autopackages by detecting the language and pulling a Docker container image matching the toolchain (Maven, .NET SDK, Node, etc.) -- same approach as the Veracode GitHub Actions workflow on `ubuntu-latest`. Requires Docker on the agent. See `library-repo/README.md` for the full language-to-image map.
+- Incomplete or stuck SAST scans on the platform are cleared automatically via `-deleteincompletescan 1` on each upload.
+
+### Jenkins UI buttons
+
+| Button | Where | What it does |
+|--------|-------|-------------|
+| **Scan Organization** | Org folder | Indexes the org, discovers repos with a Jenkinsfile, registers them as pipeline jobs, and triggers a build on the default branch of newly discovered repos |
+| **Scan Repository Now** | Repo inside org folder | Same as above for one repo |
+| **Build Now** | Branch job (e.g. `main`) | Triggers a scan on that branch immediately |
 
 ---
 
-## 7. Why this is low-risk
+## 7. Notes
 
 - Runs as its own pipeline beside each team's build, never inside it, so it cannot break their builds.
 - The only change to a product repo is one reviewed 2-line file, trivially reversible.

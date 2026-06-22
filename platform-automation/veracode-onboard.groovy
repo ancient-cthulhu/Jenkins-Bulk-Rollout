@@ -2,33 +2,22 @@
 // veracode-onboard.groovy  -  single trusted (system) Groovy script
 // =============================================================================
 // One run does everything, for every org in ORGS:
-//   1. Ensure the parent 'veracode' folder and one Organization Folder per org
-//      (GitHub navigator on the shared scm-readonly account).
-//   2. Find-or-create that org's Veracode SCA workspace (named after the org).
-//   3. Find-or-create a Jenkins-only SCA agent ('<org>-jenkins') and regenerate
-//      its token to get a fresh value. The GitHub agent ('<org>-agt', created by
-//      the separate GitHub rollout) is never touched, so GitHub scans keep their
-//      token. Regenerating the Jenkins agent every run is intentional and safe:
-//      Jenkins is its only consumer and the folder credential is overwritten in
-//      the same run, so there is no stale-token window.
-//   4. Upsert that token as the folder credential 'srcclr-api-token', which the
-//      shared library reads.
+//   1. Ensure the parent 'veracode' folder and one Organization Folder per org.
+//   2. Find-or-create that org's Veracode SCA workspace.
+//   3. Find-or-create a Jenkins-only SCA agent and regenerate its token.
+//   4. Upsert that token as the folder credential 'srcclr-api-token'.
+//   5. Apply NoTriggerOrganizationFolderProperty so discovery only auto-builds
+//      main/master -- PR branches and feature branches are registered but never
+//      auto-queued, preventing executor starvation and stale pending checks.
 //
-// Run as a SYSTEM (trusted) script: Manage Jenkins > Script Console for a one-off,
-// or a freestyle admin job with an "Execute system Groovy script" step to repeat
-// or schedule. This is NOT Job DSL and NOT sandboxed pipeline. It replaces both
-// the old orgfolders.jobdsl.groovy seed and bind-sca-tokens.groovy.
+// Run as a SYSTEM (trusted) script: Manage Jenkins > Script Console for a
+// one-off, or a freestyle admin job to repeat/schedule. NOT Job DSL, NOT
+// sandboxed pipeline.
 //
-// Needs: egress to api.veracode.com; 'veracode-api-id' / 'veracode-api-key' in
-// the Jenkins credential store; the 'scm-readonly' GitHub credential.
+// Needs: egress to api.veracode.com; 'veracode-api-id' / 'veracode-api-key'
+// in the Jenkins credential store; the 'scm-readonly' GitHub credential.
 //
-// Adding an org = add its name to ORGS and re-run. Idempotent on the Jenkins side
-// (folders/credentials converge); the Veracode side rotates the Jenkins token.
-//
-// VERSION-SENSITIVE lines are marked // [VERIFY] - confirm the class/constructor
-// names against your installed plugin versions (github-branch-source,
-// cloudbees-folder, plain-credentials). The logic does not change if a signature
-// differs; only the constructor/setter call does.
+// Adding an org = add its name to ORGS and re-run. Idempotent.
 // =============================================================================
 
 import groovy.transform.Field
@@ -53,6 +42,7 @@ import org.jenkinsci.plugins.plaincredentials.StringCredentials
 import org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl
 
 import jenkins.branch.OrganizationFolder
+import jenkins.branch.NoTriggerOrganizationFolderProperty
 import org.jenkinsci.plugins.github_branch_source.GitHubSCMNavigator
 import org.jenkinsci.plugins.github_branch_source.BranchDiscoveryTrait
 import org.jenkinsci.plugins.github_branch_source.OriginPullRequestDiscoveryTrait
@@ -64,9 +54,8 @@ import java.security.SecureRandom
 
 // ---- config -----------------------------------------------------------------
 @Field List<String> ORGS = [
-    'acme-corp',
-    'acme-labs',
-    // 'next-org',
+    'Veracode-CSE-Demos',
+    // add more orgs here and re-run
 ]
 
 @Field final String PARENT_FOLDER   = 'veracode'
@@ -79,11 +68,10 @@ import java.security.SecureRandom
 @Field final String HMAC_SCHEME     = 'VERACODE-HMAC-SHA-256'
 @Field final String REQ_VERSION     = 'vcode_request_version_1'
 
-// Veracode API id/key read from the credential store (never inlined).
 @Field String vcId  = readSecretText(VC_API_ID_CRED)
 @Field String vcKey = readSecretText(VC_API_KEY_CRED)
 
-// ---- credential store read ---------------------------------------------------
+// ---- credential store read --------------------------------------------------
 String readSecretText(String id) {
     def all = CredentialsProvider.lookupCredentials(
         StringCredentials, Jenkins.get(), ACL.SYSTEM, Collections.emptyList())
@@ -92,7 +80,7 @@ String readSecretText(String id) {
     return c.secret.plainText
 }
 
-// ---- Veracode HMAC signing (matches the veracode_api_signing scheme) ----------
+// ---- Veracode HMAC signing --------------------------------------------------
 byte[] hmac(byte[] key, byte[] msg) {
     def mac = Mac.getInstance('HmacSHA256')
     mac.init(new SecretKeySpec(key, 'HmacSHA256'))
@@ -122,8 +110,6 @@ String authHeader(String method, String urlPath) {
 
 String enc(String s) { URLEncoder.encode(s, 'UTF-8').replace('+', '%20') }
 
-// HTTP call to Veracode. urlPath is the exact path+query that gets signed AND sent,
-// so the signature always matches the request byte-for-byte.
 Map vc(String method, String urlPath, Object body = null) {
     def conn = (HttpURLConnection) new URL("https://${VC_HOST}${urlPath}").openConnection()
     conn.requestMethod = method
@@ -141,7 +127,7 @@ Map vc(String method, String urlPath, Object body = null) {
     return [code: code, json: (text ? new JsonSlurper().parseText(text) : null), text: text]
 }
 
-// ---- Veracode: workspace + agent + token -------------------------------------
+// ---- Veracode: workspace + agent + token ------------------------------------
 String findWorkspaceId(String org) {
     int page = 0
     while (true) {
@@ -175,7 +161,6 @@ String jenkinsAgentName(String org) {
     return t + suffix
 }
 
-// Always returns a FRESH token: regenerate if the Jenkins agent exists, else create.
 String freshJenkinsToken(String wsId, String org) {
     String name = jenkinsAgentName(org)
     def lr = vc('GET', "/srcclr/v3/workspaces/${wsId}/agents")
@@ -195,7 +180,7 @@ String freshJenkinsToken(String wsId, String org) {
     return tok
 }
 
-// ---- Jenkins: folder + credential --------------------------------------------
+// ---- Jenkins: folder + credential -------------------------------------------
 Folder ensureParent() {
     def existing = Jenkins.get().getItem(PARENT_FOLDER)
     if (existing instanceof Folder) return existing
@@ -211,29 +196,31 @@ OrganizationFolder ensureOrgFolder(Folder parent, String org) {
     def of = parent.createProject(OrganizationFolder, org)
     of.description = "Veracode scanning for all ${org} repositories"
 
-    // [VERIFY] navigator constructor + setters
     def nav = new GitHubSCMNavigator(org)
     nav.apiUri = GITHUB_API_URI
     nav.credentialsId = SCM_CRED_ID
-    // [VERIFY] discovery traits: all branches + origin PRs (merge). Adjust to taste.
     nav.traits = [new BranchDiscoveryTrait(3), new OriginPullRequestDiscoveryTrait(1)]
     of.navigators.replace(nav)
 
-    // [VERIFY] recognize repos that contain a Jenkinsfile as multibranch pipelines
     of.projectFactories.replace(new WorkflowMultiBranchProjectFactory())
-
-    // [VERIFY] trigger + orphan strategy constructors
     of.addTrigger(new PeriodicFolderTrigger('1d'))
     of.orphanedItemStrategy = new DefaultOrphanedItemStrategy(true, '7', '50')
-
     of.save()
     return of
+}
+
+// Always applied whether the folder is new or already exists.
+// On discovery, only auto-build main/master -- all other branches are
+// registered as jobs but never automatically queued.
+void ensureNoTriggerProperty(OrganizationFolder of) {
+    of.getProperties().removeIf { it instanceof NoTriggerOrganizationFolderProperty }
+    of.addProperty(new NoTriggerOrganizationFolderProperty('^(main|master)$'))
+    of.save()
 }
 
 void upsertFolderToken(AbstractFolder folder, String id, String value) {
     def prop = folder.getProperties().get(FolderCredentialsProperty)
     if (prop == null) {
-        // [VERIFY] FolderCredentialsProperty constructor
         prop = new FolderCredentialsProperty([] as DomainCredentials[])
         folder.addProperty(prop)
     }
@@ -246,9 +233,7 @@ void upsertFolderToken(AbstractFolder folder, String id, String value) {
     folder.save()
 }
 
-// ---- run ---------------------------------------------------------------------
-// Preflight: one cheap signed call. Fails fast on bad creds or signing before we
-// start mutating folders.
+// ---- run --------------------------------------------------------------------
 def pf = vc('GET', '/srcclr/v3/workspaces?size=1&page=0')
 if (pf.code != 200)
     throw new RuntimeException("Veracode preflight failed (${pf.code}). Check veracode-api-id/key and signing. Body: ${pf.text}")
@@ -258,11 +243,12 @@ int ok = 0, failed = 0
 ORGS.each { org ->
     try {
         def of    = ensureOrgFolder(parent, org)
+        ensureNoTriggerProperty(of)
         def wsId  = ensureWorkspace(org)
         def token = freshJenkinsToken(wsId, org)
         upsertFolderToken(of, SCA_CRED_ID, token)
-        try { of.scheduleBuild() } catch (ignored) { /* indexing also runs on trigger/webhook */ }
-        println "[veracode-onboard] ${PARENT_FOLDER}/${org}: folder ok, Jenkins token rotated, '${SCA_CRED_ID}' set."
+        try { of.scheduleBuild() } catch (ignored) { }
+        println "[veracode-onboard] ${PARENT_FOLDER}/${org}: ok, token rotated, '${SCA_CRED_ID}' set."
         ok++
     } catch (e) {
         println "[veracode-onboard] ${org}: FAILED - ${e.message}"

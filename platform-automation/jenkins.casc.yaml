@@ -30,7 +30,7 @@ unclassified:
           modernSCM:
             scm:
               git:
-                remote: "https://git.example.com/platform/veracode-pipeline.git"
+                remote: "https://github.com/Veracode-CSE-Demos/veracode-pipeline.git"
                 credentialsId: "scm-readonly"
 
 credentials:

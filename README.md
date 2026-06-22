@@ -21,18 +21,19 @@ SOLUTION.md            the one document to read/present
 architecture.svg       architecture diagram
 
 library-repo/          push as the new Git repo "veracode-pipeline", tag v1
-  vars/veracodePipeline.groovy   the entire pipeline (Linux + Windows)
-  README.md                      library usage
+  vars/veracodePipeline.groovy   the entire pipeline (Linux + Windows, Docker SAST)
+  README.md                      library usage, agent requirements, versioning
 
 consumer-repo-files/   committed into each scanned repo (by the bulk-PR script)
   Jenkinsfile                    2 lines: calls the library
   .veracode.yml                  optional per-repo IaC/secrets tuning
 
 platform-automation/   push as the new Git repo "jenkins-platform"; applied to the controller
-  jenkins.casc.yaml              register library + root credentials
-  veracode-onboard.groovy        one run: create org folders, mint + bind each org's SCA token
-  bulk_add_jenkinsfile.py        opens PRs adding the Jenkinsfile across an org
-  README.md                      apply order
+  rollout.example.py          one-shot setup script (copy to rollout.py, fill in config, run once)
+  jenkins.casc.yaml           register library + root credentials (alternative to rollout.py)
+  veracode-onboard.groovy     one run: create org folders, mint + bind each org's SCA token, create scan trigger jobs
+  bulk_add_jenkinsfile.py     opens PRs adding the Jenkinsfile across an org (--delete to reverse)
+  README.md                   apply order and configuration
 ```
 
 ## Repository Impact

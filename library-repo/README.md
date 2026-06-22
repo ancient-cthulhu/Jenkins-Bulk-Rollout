@@ -83,8 +83,50 @@ The library auto-detects the agent OS with `isUnix()` and runs the bash or Power
 
 - Credentials resolvable by ID through the folder hierarchy: `veracode-api-id`, `veracode-api-key` (required), `srcclr-api-token` (optional).
 - SCM checkout uses the credential configured on the org folder's branch source (the shared `scm-readonly` scan account in this deployment); the library does not handle SCM auth itself.
-- Agent tooling: `curl`, `unzip`, `java` (JRE 8+); `bash` on Linux or `powershell` on Windows; plus the build toolchain on agents that run SAST.
-- Plugins: Pipeline, Declarative, Credentials Binding, Workspace Cleanup, Timestamper.
+- Agent tooling: `curl`, `unzip`, `java` (JRE 8+); `bash` on Linux or `powershell` on Windows.
+- Plugins: Pipeline, Declarative, Credentials Binding, Workspace Cleanup, Timestamper, **docker-workflow** (required for containerized SAST builds).
+
+### Agent requirements for SAST packaging
+
+The SAST stage compiles the repo's source code to produce a scannable artifact, exactly like the Veracode GitHub Actions workflow running on `ubuntu-latest`. There are two ways to provide the build toolchain:
+
+**Option A -- Docker on the agent (recommended)**
+
+Install Docker on the Jenkins agent and install the `docker-workflow` plugin on the controller. The pipeline auto-detects the repo language from build files (`pom.xml`, `*.csproj`, `package.json`, etc.) and pulls the matching container image to compile inside. No toolchain installation on the agent itself is needed.
+
+Required setup:
+1. Install Docker on the agent host.
+2. Add the jenkins user to the docker group: `usermod -aG docker jenkins`
+3. If Jenkins runs inside Docker, mount the host socket: `-v /var/run/docker.sock:/var/run/docker.sock`
+4. Install the `docker-workflow` plugin on the Jenkins controller.
+
+Language-to-image map (auto-detected, or override with `sastImage`):
+
+| Language | Detected by | Docker image |
+|---|---|---|
+| Java/Maven | `pom.xml` | `maven:3.9-eclipse-temurin-21` |
+| Java/Gradle | `build.gradle` | `gradle:8-eclipse-temurin-21` |
+| .NET/C# | `*.csproj` / `*.sln` | `mcr.microsoft.com/dotnet/sdk:8.0` |
+| Node.js | `package.json` | `node:20` |
+| Python | `requirements.txt` / `pyproject.toml` | `python:3.12` |
+| Go | `go.mod` | `golang:1.22` |
+| Ruby | `Gemfile` | `ruby:3.3` |
+| PHP | `composer.json` | `php:8.3-cli` |
+| Rust | `Cargo.toml` | `rust:1.77` |
+
+Override the image per-repo in the Jenkinsfile:
+```groovy
+veracodePipeline(sastImage: 'maven:3.9-eclipse-temurin-21')
+```
+Or set `VERACODE_SAST_IMAGE` as an environment variable on the org folder. Set to `none` to disable containerized builds and always use the bare agent.
+
+**Option B -- Pre-installed toolchain on the agent**
+
+Install the required language toolchains directly on the Jenkins agent (JDK + Maven/Gradle, .NET SDK, Node, etc.). Use `VERACODE_SAST_AGENT_LABEL` to route SAST jobs to agents that have the right toolchain. Set `sastImage: 'none'` to skip Docker detection.
+
+**Option C -- Custom build steps**
+
+For repos with complex builds, pass a `buildSteps` closure. See "Complex builds" above.
 
 ## Versioning
 

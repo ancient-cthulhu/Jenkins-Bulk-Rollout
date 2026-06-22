@@ -8,30 +8,55 @@
 // Scans:
 //   Agent-Based SCA          default branch + PRs (token-gated, skips if absent)
 //   Container/IaC/Secrets     default branch + PRs (directory scan of source)
-//   Policy Scan (SAST)        repo default branch only, post-merge, on a
-//                             label-restricted toolchain agent
+//   Policy Scan (SAST)        repo default branch only, post-merge
+//
+// SAST packaging replicates what the Veracode GitHub Actions workflow does:
+//   - Auto-detects language from repo files (pom.xml, *.csproj, package.json, etc.)
+//   - Pulls the appropriate Docker image and runs the Veracode autopackager inside it
+//   - Falls back to the bare agent if Docker is not available
+//   - Override the image explicitly with sastImage or VERACODE_SAST_IMAGE
 //
 // Call from a 2-line Jenkinsfile:
 //   @Library('veracode-pipeline@v1') _
 //   veracodePipeline()
 //
 // Common config (all also settable as folder/job env vars in [brackets]):
-//   appName            'org/repo'                 [VERACODE_APP_NAME]
-//   sourceDir          'app'                      [VERACODE_SOURCE_DIR]
-//   sastAgentLabel     'veracode-sast-linux'      [VERACODE_SAST_AGENT_LABEL]   (required to run SAST)
-//   cliVersion         '2.x.y'                    [VERACODE_CLI_VERSION]
-//   cliSha256          '<hex>'                    [VERACODE_CLI_SHA256]
-//   wrapperVersion     '24.x.y'                   [VERACODE_WRAPPER_VERSION]
-//   scanFeatureBranches  false                    [VERACODE_SCAN_FEATURE_BRANCHES]
-//   gateSca/gateIac/gatePolicy  false/false/true  [VERACODE_GATE_SCA/IAC/POLICY]
-//   archiveIacFindings false                      [VERACODE_ARCHIVE_IAC]
-//   topLevelBranches   'main'                     [TOP_LEVEL_BRANCHES]  (fallback only)
-//   buildSteps         { ... }                    closure; see README "Complex builds"
+//   appName              'org/repo'                    [VERACODE_APP_NAME]
+//   sourceDir            'app'                         [VERACODE_SOURCE_DIR]
+//   sastImage            'maven:3.9-eclipse-temurin-21'[VERACODE_SAST_IMAGE]
+//     -- Docker image used to compile and package for SAST. Auto-detected from
+//        repo files if not set. Set to 'none' to disable containerized builds
+//        and always run on the bare agent.
+//   sastAgentLabel       'sast-node'                   [VERACODE_SAST_AGENT_LABEL]
+//     -- Optional. Routes SAST to a specific agent label. Without it SAST runs
+//        on any available agent (Docker handles the toolchain, not the agent).
+//   cliVersion           '2.x.y'                       [VERACODE_CLI_VERSION]
+//   cliSha256            '<hex>'                        [VERACODE_CLI_SHA256]
+//   wrapperVersion       '24.x.y'                      [VERACODE_WRAPPER_VERSION]
+//   scanFeatureBranches  false                          [VERACODE_SCAN_FEATURE_BRANCHES]
+//   gateSca/gateIac/gatePolicy  false/false/true       [VERACODE_GATE_SCA/IAC/POLICY]
+//   archiveIacFindings   false                         [VERACODE_ARCHIVE_IAC]
+//   topLevelBranches     'main'                        [TOP_LEVEL_BRANCHES]  (fallback only)
+//   buildSteps           { ... }                       closure; custom build, see README
+//
+// Auto-detected language -> Docker image mapping:
+//   pom.xml                       -> maven:3.9-eclipse-temurin-21
+//   build.gradle / build.gradle.kts -> gradle:8-eclipse-temurin-21
+//   *.csproj / *.sln              -> mcr.microsoft.com/dotnet/sdk:8.0
+//   package.json                  -> node:20
+//   requirements.txt / setup.py / pyproject.toml -> python:3.12
+//   go.mod                        -> golang:1.22
+//   Gemfile                       -> ruby:3.3
+//   composer.json                 -> php:8.3-cli
+//   Cargo.toml                    -> rust:1.77
 //
 // Required credentials, resolved by id through the folder hierarchy:
 //   veracode-api-id   (Secret text, required for SAST/IaC-upload)
 //   veracode-api-key  (Secret text, required for SAST/IaC-upload)
 //   srcclr-api-token  (Secret text, optional - SCA skips cleanly if absent)
+//
+// Required Jenkins plugins (in addition to standard pipeline plugins):
+//   docker-workflow  -- enables docker.image().inside() for containerized builds
 // =============================================================================
 
 def call(Map config = [:]) {
@@ -57,7 +82,6 @@ def call(Map config = [:]) {
                         boolean topLevel    = isDefault && !isCR
                         boolean scanFeature = asBool(config.scanFeatureBranches, env.VERACODE_SCAN_FEATURE_BRANCHES, false)
 
-                        // Only the default branch and PRs scan by default.
                         boolean shouldScan  = isDefault || isCR || scanFeature
 
                         env.VC_IS_PR        = isCR.toString()
@@ -65,25 +89,22 @@ def call(Map config = [:]) {
                         env.VC_IS_TOP_LEVEL = topLevel.toString()
                         env.VC_SHOULD_SCAN  = shouldScan.toString()
 
-                        // App profile is org/repo, independent of branch and of any
-                        // parent folder. In a multibranch job under the 'veracode' org
-                        // folder, JOB_NAME is '<parent>/<org>/<repo>/<branch>', so take
-                        // the two segments before the branch (the branch is always last).
                         def parts = (env.JOB_NAME ?: '').split('/').findAll { it }
                         String orgRepo
                         if (parts.size() >= 3)       orgRepo = "${parts[-3]}/${parts[-2]}"
                         else if (parts.size() == 2)  orgRepo = parts[-2]
                         else                         orgRepo = (env.JOB_NAME ?: '')
-                        env.VC_APP_NAME = ((config.appName ?: env.VERACODE_APP_NAME?.trim()) ?: orgRepo)
-                        env.VC_SRC      = ((config.sourceDir ?: env.VERACODE_SOURCE_DIR?.trim()) ?: '.')
 
+                        env.VC_APP_NAME    = ((config.appName    ?: env.VERACODE_APP_NAME?.trim())    ?: orgRepo)
+                        env.VC_SRC         = ((config.sourceDir  ?: env.VERACODE_SOURCE_DIR?.trim())  ?: '.')
                         env.VC_SAST_LABEL  = (config.sastAgentLabel ?: env.VERACODE_SAST_AGENT_LABEL ?: '').trim()
-                        env.VC_CLI_VERSION = (config.cliVersion ?: env.VERACODE_CLI_VERSION ?: '').trim()
-                        env.VC_CLI_SHA256  = (config.cliSha256 ?: env.VERACODE_CLI_SHA256 ?: '').trim()
+                        env.VC_SAST_IMAGE  = (config.sastImage   ?: env.VERACODE_SAST_IMAGE   ?: '').trim()
+                        env.VC_CLI_VERSION = (config.cliVersion  ?: env.VERACODE_CLI_VERSION  ?: '').trim()
+                        env.VC_CLI_SHA256  = (config.cliSha256   ?: env.VERACODE_CLI_SHA256   ?: '').trim()
                         env.VC_WRAPPER_VER = (config.wrapperVersion ?: env.VERACODE_WRAPPER_VERSION ?: '').trim()
 
-                        env.VC_GATE_SCA    = asBool(config.gateSca, env.VERACODE_GATE_SCA, false).toString()
-                        env.VC_GATE_IAC    = asBool(config.gateIac, env.VERACODE_GATE_IAC, false).toString()
+                        env.VC_GATE_SCA    = asBool(config.gateSca,    env.VERACODE_GATE_SCA,    false).toString()
+                        env.VC_GATE_IAC    = asBool(config.gateIac,    env.VERACODE_GATE_IAC,    false).toString()
                         env.VC_GATE_POLICY = asBool(config.gatePolicy, env.VERACODE_GATE_POLICY, true).toString()
                         env.VC_ARCHIVE_IAC = asBool(config.archiveIacFindings, env.VERACODE_ARCHIVE_IAC, false).toString()
 
@@ -95,9 +116,8 @@ def call(Map config = [:]) {
             }
 
             // -----------------------------------------------------------------
-            // Light source scans: SCA + IaC/secrets. Default branch and PRs only.
-            // Run on the general agent. The HMAC key is bound only on the default
-            // branch and only around the IaC upload, never on PR builds.
+            // Light source scans: SCA + IaC/secrets. Default branch and PRs.
+            // Run on the general agent -- no toolchain needed.
             // -----------------------------------------------------------------
             stage('Source Scans') {
                 when { expression { env.VC_SHOULD_SCAN == 'true' } }
@@ -111,7 +131,6 @@ def call(Map config = [:]) {
                 when { expression { env.VC_SHOULD_SCAN == 'true' } }
                 parallel {
 
-                    // Agent-Based SCA: skip if no token; surface real failures.
                     stage('Agent-Based SCA') {
                         steps {
                             script {
@@ -124,12 +143,11 @@ def call(Map config = [:]) {
                                             rc = sh(returnStatus: true, script: '''
                                                 set -o pipefail
                                                 echo "Running Agent-Based SCA scan..."
-                                                # Prefer a pre-staged agent; else download.
                                                 if command -v srcclr >/dev/null 2>&1; then
-                                                    srcclr scan --recursive --update-advisor
+                                                    srcclr scan --recursive --update-advisor --allow-dirty
                                                 else
-                                                    curl -sSL https://sca-downloads.veracode.com/ci.sh \\
-                                                        | sh -s -- scan --recursive --update-advisor
+                                                    curl -sSL https://sca-downloads.veracode.com/ci.sh \
+                                                        | sh -s -- scan --recursive --update-advisor --allow-dirty
                                                 fi
                                             ''')
                                         } else {
@@ -137,12 +155,12 @@ def call(Map config = [:]) {
                                                 Set-ExecutionPolicy AllSigned -Scope Process -Force
                                                 $ProgressPreference = "silentlyContinue"
                                                 if (Get-Command srcclr -ErrorAction SilentlyContinue) {
-                                                    srcclr scan --recursive --update-advisor
+                                                    srcclr scan --recursive --update-advisor --allow-dirty
                                                 } else {
                                                     $client = New-Object System.Net.WebClient
                                                     $sca = $client.DownloadString("https://sca-downloads.veracode.com/ci.ps1")
                                                     Invoke-Command -ScriptBlock ([scriptblock]::Create($sca)) `
-                                                        -ArgumentList @("scan","--recursive","--update-advisor")
+                                                        -ArgumentList @("scan","--recursive","--update-advisor","--allow-dirty")
                                                 }
                                                 exit $LASTEXITCODE
                                             ''')
@@ -154,26 +172,23 @@ def call(Map config = [:]) {
                                 } catch (org.jenkinsci.plugins.credentialsbinding.impl.CredentialNotFoundException nf) {
                                     echo "Agent-Based SCA skipped: srcclr-api-token not configured for this folder."
                                 } catch (err) {
-                                    if (hasToken) { throw err }   // a real binding/scan error must not be hidden
+                                    if (hasToken) { throw err }
                                     echo "Agent-Based SCA skipped: ${err}"
                                 }
                             }
                         }
                     }
 
-                    // Container/IaC/Secrets: local scan; platform upload only on default branch.
                     stage('Container/IaC/Secrets') {
                         steps {
                             script {
                                 boolean toPlatform = (env.VC_IS_DEFAULT == 'true')
                                 if (toPlatform) {
-                                    // Default branch: HMAC key bound only here, only now.
                                     withCredentials([string(credentialsId: 'veracode-api-id', variable: 'VERACODE_API_ID'),
                                                      string(credentialsId: 'veracode-api-key', variable: 'VERACODE_API_KEY')]) {
                                         runIacScan(true)
                                     }
                                 } else {
-                                    // PR/feature build: local-only, no tenant credentials.
                                     runIacScan(false)
                                 }
                             }
@@ -194,33 +209,43 @@ def call(Map config = [:]) {
             }
 
             // -----------------------------------------------------------------
-            // SAST (Package + Policy): default branch only, on a toolchain agent.
-            // A fresh checkout runs on the SAST node so no large source stash is
-            // shipped between agents. HMAC creds are bound only for the wrapper
-            // upload, via a 0600 credentials file, never on the command line.
+            // SAST (Package + Policy): default branch only.
+            //
+            // Replicates the Veracode GitHub Actions workflow behavior:
+            //   1. Detects the repo language from well-known build files.
+            //   2. Pulls the matching Docker image (same toolchains as a
+            //      GitHub Actions ubuntu-latest runner).
+            //   3. Runs the Veracode autopackager inside the container so it
+            //      can compile the source -- no toolchain install needed on the
+            //      Jenkins agent itself.
+            //   4. Falls back to the bare agent if Docker is unavailable or
+            //      sastImage is set to 'none'.
+            //
+            // Override the image per-repo via:
+            //   veracodePipeline(sastImage: 'maven:3.9-eclipse-temurin-21')
+            // Or via the VERACODE_SAST_IMAGE env var on the org folder.
             // -----------------------------------------------------------------
             stage('SAST') {
                 when {
                     beforeAgent true
-                    allOf {
-                        expression { env.VC_IS_TOP_LEVEL == 'true' }
-                        expression { env.VC_SAST_LABEL != null && env.VC_SAST_LABEL != '' }
-                    }
+                    expression { env.VC_IS_TOP_LEVEL == 'true' }
                 }
-                agent { label "${env.VC_SAST_LABEL}" }
+                agent { label (env.VC_SAST_LABEL ?: '') }
                 stages {
                     stage('Package Artifacts') {
                         steps {
                             script {
                                 checkout scm
-                                installVeracodeCli()
                                 if (config.buildSteps) {
-                                    // buildSteps runs with no Veracode creds in scope.
-                                    echo 'Package: running repo-supplied buildSteps (autopackager skipped).'
+                                    // Repo supplies its own build -- runs on bare agent.
+                                    // buildSteps must leave scannable artifacts in verascan/.
+                                    echo 'Package: running repo-supplied buildSteps.'
+                                    installVeracodeCli()
                                     config.buildSteps.call()
                                     ensureVerascanNonEmpty()
                                 } else {
-                                    runAutopackager()
+                                    // Auto-detect language and package inside the right container.
+                                    packageWithAutodetect()
                                 }
                             }
                         }
@@ -233,28 +258,57 @@ def call(Map config = [:]) {
                 }
                 post { always { cleanWs(deleteDirs: true, notFailBuild: true) } }
             }
-
-            // Loud, visible signal if SAST is due but no toolchain label is set.
-            stage('SAST routing check') {
-                when {
-                    allOf {
-                        expression { env.VC_IS_TOP_LEVEL == 'true' }
-                        expression { env.VC_SAST_LABEL == null || env.VC_SAST_LABEL == '' }
-                    }
-                }
-                steps {
-                    script {
-                        unstable('SAST skipped: no toolchain agent label set. ' +
-                                 'Set VERACODE_SAST_AGENT_LABEL on the org folder (or sastAgentLabel) to enable SAST.')
-                    }
-                }
-            }
         }
 
         post {
             always {
                 echo "Build finished with status: ${currentBuild.currentResult}"
                 cleanWs(deleteDirs: true, notFailBuild: true)
+                script {
+                    def scanTypes = []
+                    if (env.VC_IS_DEFAULT == 'true') scanTypes << 'SCA' << 'IaC/Secrets' << 'SAST'
+                    else                              scanTypes << 'SCA' << 'IaC/Secrets'
+                    def scanDesc = scanTypes.join(' + ')
+                    def statusMsg = ''
+                    def ghStatus = 'SUCCESS'
+                    // Check if a scan was already in progress and we deferred
+                    def scanQueued = fileExists('/tmp/vc_scan_queued')
+                    if (scanQueued) {
+                        sh 'rm -f /tmp/vc_scan_queued'
+                        statusMsg = "Veracode SAST scan already in progress on platform -- re-trigger once complete"
+                        ghStatus = 'PENDING'
+                    } else {
+                        switch (currentBuild.currentResult) {
+                            case 'SUCCESS':
+                                statusMsg = "Veracode ${scanDesc} scan passed"
+                                ghStatus  = 'SUCCESS'
+                                break
+                            case 'UNSTABLE':
+                                statusMsg = "Veracode ${scanDesc} scan completed with warnings -- review results in platform.veracode.com"
+                                ghStatus  = 'PENDING'
+                                break
+                            case 'FAILURE':
+                                statusMsg = "Veracode ${scanDesc} scan failed -- review stage logs for details"
+                                ghStatus  = 'FAILURE'
+                                break
+                            default:
+                                statusMsg = "Veracode ${scanDesc} scan finished: ${currentBuild.currentResult}"
+                                ghStatus  = 'PENDING'
+                        }
+                    }
+                    try {
+                        // Override the generic GitHub branch source status message with
+                        // something that tells the developer what actually ran.
+                        githubNotify(
+                            status: ghStatus,
+                            description: statusMsg,
+                            context: 'Veracode Security Scan'
+                        )
+                    } catch (ignored) {
+                        // githubNotify is only available when the build was triggered
+                        // by a GitHub event (PR/push). Suppress on manual/scheduled runs.
+                    }
+                }
             }
             failure { echo 'Veracode pipeline failed. Review the stage logs.' }
         }
@@ -262,18 +316,16 @@ def call(Map config = [:]) {
 }
 
 // =============================================================================
-// Helpers (same vars file; callable from call()).
+// Helpers
 // =============================================================================
 
 private boolean asBool(Object cfg, Object envVal, boolean dflt) {
     def truthy = ['true', '1', 'yes', 'on']
-    if (cfg != null)            return truthy.contains(cfg.toString().trim().toLowerCase())
+    if (cfg != null)                return truthy.contains(cfg.toString().trim().toLowerCase())
     if (envVal?.toString()?.trim()) return truthy.contains(envVal.toString().trim().toLowerCase())
     return dflt
 }
 
-// Default-branch detection. Primary signal is BRANCH_IS_PRIMARY from the GitHub
-// branch source; TOP_LEVEL_BRANCHES is an optional regex fallback.
 private boolean resolveDefaultBranch(Map config) {
     String override = (config.topLevelBranches ?: env.TOP_LEVEL_BRANCHES?.trim())
     if (env.BRANCH_IS_PRIMARY != null) {
@@ -286,8 +338,7 @@ private boolean resolveDefaultBranch(Map config) {
     return false
 }
 
-// Prefer a pre-staged on-PATH veracode binary. Only download if absent, and
-// verify sha256 when one is supplied.
+// Prefer a pre-staged on-PATH veracode binary; download if absent.
 private void installVeracodeCli() {
     if (isUnix()) {
         sh '''
@@ -297,13 +348,25 @@ private void installVeracodeCli() {
                 veracode version || true
                 exit 0
             fi
-            echo "WARNING: no pre-staged Veracode CLI; downloading. Pre-stage a pinned CLI on agents to avoid this."
+            echo "No pre-staged Veracode CLI found; downloading."
             curl -fsS https://tools.veracode.com/veracode-cli/install -o install_cli.sh
             if [ -n "${VC_CLI_SHA256:-}" ]; then
                 echo "${VC_CLI_SHA256}  install_cli.sh" | sha256sum -c -
             fi
             sh install_cli.sh
-            ./veracode version
+            # Move to /usr/local/bin if writable so subsequent stages on the
+            # same agent find it on PATH without re-downloading.
+            # Use WORKSPACE explicitly -- durable shell CWD is not the workspace.
+            if [ -w /usr/local/bin ] && [ -f "${WORKSPACE}/veracode" ]; then
+                mv "${WORKSPACE}/veracode" /usr/local/bin/veracode
+                echo "Veracode CLI installed to /usr/local/bin/veracode"
+            fi
+            # Find and run wherever it ended up
+            if command -v veracode >/dev/null 2>&1; then
+                veracode version
+            else
+                "${WORKSPACE}/veracode" version
+            fi
         '''
     } else {
         powershell '''
@@ -313,7 +376,7 @@ private void installVeracodeCli() {
                 veracode version
                 exit 0
             }
-            Write-Host "WARNING: no pre-staged Veracode CLI; downloading. Pre-stage a pinned CLI to avoid this."
+            Write-Host "No pre-staged Veracode CLI; downloading."
             Invoke-WebRequest -Uri "https://tools.veracode.com/veracode-cli/install.ps1" -OutFile "install.ps1"
             if ($env:VC_CLI_SHA256) {
                 $h = (Get-FileHash -Algorithm SHA256 install.ps1).Hash.ToLower()
@@ -327,15 +390,125 @@ private void installVeracodeCli() {
     }
 }
 
-// IaC/secrets directory scan. withCreds=false means no platform credentials in
-// scope (PR/feature builds). On the default branch the caller wraps this in
-// withCredentials and passes true so results can reach the platform.
+// Detect language from repo files and return the matching Docker image.
+// Mirrors the toolchain matrix of a GitHub Actions ubuntu-latest runner.
+// Returns empty string if no match found.
+private String detectBuildImage() {
+    if (!isUnix()) {
+        echo 'Language auto-detection is Linux only; skipping on Windows agent.'
+        return ''
+    }
+
+    def checks = [
+        // indicator file/glob              image
+        ['test -f pom.xml',                                         'maven:3.9-eclipse-temurin-21',             'Java/Maven'],
+        ['test -f build.gradle || test -f build.gradle.kts',        'gradle:8-eclipse-temurin-21',              'Java/Gradle'],
+        ['find . -maxdepth 4 -name "*.csproj" | grep -q .',         'mcr.microsoft.com/dotnet/sdk:8.0',         '.NET/C#'],
+        ['find . -maxdepth 4 -name "*.sln"    | grep -q .',         'mcr.microsoft.com/dotnet/sdk:8.0',         '.NET/C# (solution)'],
+        ['test -f package.json',                                     'node:20',                                  'Node.js'],
+        ['test -f requirements.txt || test -f setup.py || test -f pyproject.toml', 'python:3.12',               'Python'],
+        ['test -f go.mod',                                          'golang:1.22',                               'Go'],
+        ['test -f Gemfile',                                         'ruby:3.3',                                  'Ruby'],
+        ['test -f composer.json',                                   'php:8.3-cli',                               'PHP'],
+        ['test -f Cargo.toml',                                      'rust:1.77',                                 'Rust'],
+    ]
+
+    for (def row : checks) {
+        int rc = sh(returnStatus: true, script: row[0])
+        if (rc == 0) {
+            echo "Language detected: ${row[2]} -> image: ${row[1]}"
+            return row[1]
+        }
+    }
+
+    echo 'WARNING: could not detect language from repo files. ' +
+         'Set sastImage in your Jenkinsfile or VERACODE_SAST_IMAGE on the org folder.'
+    return ''
+}
+
+// Check whether Docker is usable on this agent.
+private boolean dockerAvailable() {
+    if (!isUnix()) return false
+    int rc = sh(returnStatus: true, script: 'docker info > /dev/null 2>&1')
+    if (rc != 0) {
+        echo 'Docker not available on this agent (docker info failed). ' +
+             'Running autopackager on bare agent -- ensure the language toolchain is installed.'
+    }
+    return rc == 0
+}
+
+// Core of the SAST packaging path.
+// Replicates the Veracode GitHub Actions workflow:
+//   1. Use VC_SAST_IMAGE if explicitly set (or 'none' to force bare agent).
+//   2. Otherwise auto-detect from repo files.
+//   3. If Docker available + image resolved: compile and package inside container.
+//   4. If not: fall back to bare agent with clear error guidance on failure.
+private void packageWithAutodetect() {
+    String image = env.VC_SAST_IMAGE?.trim() ?: ''
+
+    if (image.toLowerCase() == 'none') {
+        echo 'sastImage=none: running autopackager on bare agent (Docker disabled by config).'
+        installVeracodeCli()
+        runAutopackager()
+        return
+    }
+
+    if (!image) {
+        echo 'No sastImage configured -- auto-detecting language from repo files...'
+        image = detectBuildImage()
+    }
+
+    if (image && dockerAvailable()) {
+        echo "Packaging inside Docker container: ${image}"
+        echo "This replicates the toolchain environment of a GitHub Actions ubuntu-latest runner."
+        // Run as root inside the container so package managers can install dependencies.
+        // The workspace is bind-mounted automatically by docker.image().inside().
+        docker.image(image).inside('--user root') {
+            installVeracodeCli()
+            runAutopackager()
+        }
+    } else {
+        // No Docker or no image -- try the bare agent anyway.
+        // If it fails, give the admin a clear path to fix it.
+        echo 'Containerized build not available; running autopackager on bare agent.'
+        installVeracodeCli()
+        try {
+            runAutopackager()
+        } catch (err) {
+            error(
+                "SAST autopackager failed for ${env.VC_APP_NAME} on agent '${env.NODE_NAME}'.\n" +
+                "The agent likely lacks the language build toolchain (Maven, MSBuild, npm, etc.).\n" +
+                "\n" +
+                "How to fix (pick one):\n" +
+                "  A. Enable Docker on the agent and add the docker-workflow Jenkins plugin.\n" +
+                "     The pipeline will then auto-detect the language and pull the right container.\n" +
+                "     This replicates the GitHub Actions runner behavior with no extra config.\n" +
+                "\n" +
+                "  B. Set sastImage explicitly in the Jenkinsfile:\n" +
+                "       veracodePipeline(sastImage: 'maven:3.9-eclipse-temurin-21')\n" +
+                "     Or set VERACODE_SAST_IMAGE on the org folder in Jenkins.\n" +
+                "     Language-to-image map is in the library header comment.\n" +
+                "\n" +
+                "  C. Supply a buildSteps closure to run the repo's own build:\n" +
+                "       veracodePipeline(buildSteps: { sh 'mvn package'; sh 'cp target/*.jar verascan/' })\n" +
+                "\n" +
+                "  D. Install the required toolchain directly on agent '${env.NODE_NAME}'.\n" +
+                "\n" +
+                "Original error: ${err.getMessage()}"
+            )
+        }
+    }
+}
+
 private void runIacScan(boolean withCreds) {
     if (isUnix()) {
         sh """
             ${withCreds ? 'export VERACODE_API_KEY_ID="\$VERACODE_API_ID"; export VERACODE_API_KEY_SECRET="\$VERACODE_API_KEY"' : 'echo "Local IaC/secrets scan (no platform credentials on this build)."'}
             SRC="\$VC_SRC"
-            VERACODE_BIN="./veracode"; command -v veracode >/dev/null 2>&1 && VERACODE_BIN="veracode"
+            VERACODE_BIN="veracode"
+            if ! command -v veracode >/dev/null 2>&1; then
+                VERACODE_BIN="\${WORKSPACE}/veracode"
+            fi
             "\$VERACODE_BIN" scan --type directory --source "\$SRC" --format json \\
                 --output container_iac_secrets.json \\
                 || echo "IaC/secrets scan reported findings or errored (non-gating unless gateIac)."
@@ -353,9 +526,8 @@ private void runIacScan(boolean withCreds) {
         """
     }
     if (env.VC_GATE_IAC == 'true') {
-        // Gate on presence of findings; tune the predicate to your policy.
         int findings = isUnix()
-            ? sh(returnStatus: true, script: 'grep -q "\\"severity\\"" container_iac_secrets.json 2>/dev/null')
+            ? sh(returnStatus: true, script: 'grep -q \\"severity\\" container_iac_secrets.json 2>/dev/null')
             : powershell(returnStatus: true, script: 'if (Select-String -Quiet -Path container_iac_secrets.json -Pattern "severity") { exit 0 } else { exit 1 }')
         if (findings == 0) { error 'IaC/secrets gate: findings present and gateIac is enabled.' }
     }
@@ -374,10 +546,13 @@ private void runAutopackager() {
         sh '''
             set -e
             SRC="$VC_SRC"
-            VERACODE_BIN="./veracode"; command -v veracode >/dev/null 2>&1 && VERACODE_BIN="veracode"
+            VERACODE_BIN="veracode"
+            if ! command -v veracode >/dev/null 2>&1; then
+                VERACODE_BIN="${WORKSPACE}/veracode"
+            fi
             echo "Running Veracode autopackager on: $SRC"
             rm -rf verascan && mkdir -p verascan
-            "$VERACODE_BIN" package --source "$SRC" --output verascan
+            "$VERACODE_BIN" package --source "$SRC" --output verascan --trust
             find verascan -type f | tee artifact_list.txt
             [ -s artifact_list.txt ] || { echo "No packaged artifacts found" >&2; exit 1; }
             echo "Total artifacts: $(wc -l < artifact_list.txt)"
@@ -391,7 +566,7 @@ private void runAutopackager() {
             Write-Host "Running Veracode autopackager on: $src"
             Remove-Item -Recurse -Force verascan -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Force -Path verascan | Out-Null
-            & $veracodeExe package --source "$src" --output verascan
+            & $veracodeExe package --source "$src" --output verascan --trust
             $artifacts = Get-ChildItem -Path verascan -Recurse -File
             if (!$artifacts) { Write-Error "No packaged artifacts found"; exit 1 }
             $artifacts.FullName | Out-File -FilePath artifact_list.txt -Encoding utf8
@@ -403,8 +578,7 @@ private void runAutopackager() {
 
 // Policy/SAST upload via the Java wrapper. Credentials come from a 0600
 // ~/.veracode/credentials file written from masked env vars (shell expansion,
-// not Groovy interpolation) and removed after the run. The wrapper version is
-// pinned when VC_WRAPPER_VER is set.
+// not Groovy interpolation) and removed after the run.
 private void runPolicyScan() {
     withCredentials([string(credentialsId: 'veracode-api-id', variable: 'VERACODE_API_ID'),
                      string(credentialsId: 'veracode-api-key', variable: 'VERACODE_API_KEY')]) {
@@ -416,7 +590,7 @@ private void runPolicyScan() {
                     VERSION="$VC_WRAPPER_VER"
                 else
                     echo "WARNING: VC_WRAPPER_VER unset; resolving latest. Pin wrapperVersion for reproducibility."
-                    VERSION=$(curl -fsSL "$BASE/maven-metadata.xml" | sed -n 's:.*<latest>\\(.*\\)</latest>.*:\\1:p')
+                    VERSION=$(curl -fsSL "$BASE/maven-metadata.xml" | grep -oP '(?<=<latest>)[^<]+')
                 fi
                 [ -n "$VERSION" ] || { echo "No wrapper version" >&2; exit 1; }
                 echo "Java API Wrapper version: $VERSION"
@@ -427,7 +601,6 @@ private void runPolicyScan() {
                 JAR=$(find .veracode_jar -name 'VeracodeJavaAPI*.jar' | head -n 1)
                 [ -n "$JAR" ] || { echo "wrapper jar not found" >&2; exit 1; }
 
-                # credentials file, 0600, from masked env vars; removed on exit.
                 umask 077
                 mkdir -p "$HOME/.veracode"
                 cleanup() { rm -f "$HOME/.veracode/credentials"; }
@@ -439,14 +612,28 @@ private void runPolicyScan() {
                 } > "$HOME/.veracode/credentials"
 
                 echo "Uploading to Veracode Policy Scan as: $VC_APP_NAME"
-                java -jar "$JAR" \\
-                    -action UploadAndScan \\
-                    -appname "$VC_APP_NAME" \\
-                    -createprofile true \\
-                    -autoscan true \\
-                    -filepath "verascan" \\
+                java -jar "$JAR" \
+                    -action UploadAndScan \
+                    -appname "$VC_APP_NAME" \
+                    -createprofile true \
+                    -autoscan true \
+                    -deleteincompletescan 1 \
+                    -toplevel true \
+                    -filepath "verascan" \
                     -version "$BRANCH_NAME $BUILD_NUMBER"
                 RC=$?
+                # Exit code 2 means a scan is already in progress (Pre-Scan Success
+                # or similar). With -deleteincompletescan 2 this should be rare but
+                # can still happen if the platform scan is actively running.
+                # Treat it as non-fatal -- the platform already has the artifacts.
+                if [ "$RC" -eq 2 ]; then
+                    echo "WARNING: A scan is already in progress on the platform for $VC_APP_NAME."
+                    echo "The current build's artifacts have NOT been uploaded. Wait for the"
+                    echo "in-progress scan to complete, then re-trigger this build."
+                    # Mark unstable rather than failed so GitHub gets a non-blocking signal.
+                    touch /tmp/vc_scan_queued
+                    exit 0
+                fi
                 if [ "${VC_GATE_POLICY:-true}" = "true" ] && [ "$RC" -ne 0 ]; then
                     echo "Policy gate: wrapper returned $RC." >&2
                     exit "$RC"
@@ -469,7 +656,6 @@ private void runPolicyScan() {
                 $jar = Get-ChildItem -Path ".veracode_jar" -Recurse -File -Filter "VeracodeJavaAPI*.jar" | Select-Object -First 1
                 if (!$jar) { Write-Error "wrapper jar not found" }
 
-                # credentials file from masked env vars; removed in finally.
                 $vcDir = Join-Path $env:USERPROFILE ".veracode"
                 New-Item -ItemType Directory -Force -Path $vcDir | Out-Null
                 $credFile = Join-Path $vcDir "credentials"
@@ -485,6 +671,8 @@ private void runPolicyScan() {
                         -appname "$env:VC_APP_NAME" `
                         -createprofile true `
                         -autoscan true `
+                        -deleteincompletescan 1 `
+                        -toplevel true `
                         -filepath "verascan" `
                         -version "$env:BRANCH_NAME $env:BUILD_NUMBER"
                     $rc = $LASTEXITCODE

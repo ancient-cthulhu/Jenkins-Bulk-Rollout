@@ -1,0 +1,9 @@
+# Local test artifacts
+verascan/
+artifact_list.txt
+install_cli.sh
+veracode
+
+# OS noise
+.DS_Store
+Thumbs.db

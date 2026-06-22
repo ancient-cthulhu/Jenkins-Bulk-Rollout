@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# rollout.example.py contains real credentials -- never commit it.
+# rollout.py is the safe dummy-values template that gets committed.
+rollout.example.py
+
+# Credentials and environment
+.env
+*.env
+.env.*
+secrets.*
+
+# OS noise
+.DS_Store
+Thumbs.db
