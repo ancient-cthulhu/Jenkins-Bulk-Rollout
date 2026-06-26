@@ -7,7 +7,7 @@
 # Veracode token + bind folder credential), run from the Script Console or a
 # small admin job. Adding an org is a one-line change to ORGS in that script.
 #
-# Plugins: configuration-as-code, workflow-cps-global-lib, workflow-multibranch,
+# Plugins: configuration-as-code, pipeline-groovy-lib, workflow-multibranch,
 #   github-branch-source, cloudbees-folder, credentials, credentials-binding,
 #   plain-credentials, ws-cleanup, timestamper.
 #

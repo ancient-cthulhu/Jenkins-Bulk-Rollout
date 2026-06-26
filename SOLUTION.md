@@ -85,7 +85,7 @@ of every org it touches. Jenkins uses it for three things:
 
 ## 4. Requirements
 
-**Jenkins plugins:** `workflow-cps-global-lib`, `workflow-aggregator`, `workflow-multibranch`, `pipeline-model-definition`, `cloudbees-folder`, `github-branch-source`, `credentials`, `credentials-binding`, `plain-credentials`, `configuration-as-code`, `ws-cleanup`, `timestamper`.
+**Jenkins plugins:** `pipeline-groovy-lib`, `workflow-aggregator`, `workflow-multibranch`, `pipeline-model-definition`, `cloudbees-folder`, `github-branch-source`, `credentials`, `credentials-binding`, `plain-credentials`, `configuration-as-code`, `ws-cleanup`, `timestamper`.
 > The agents attach over SSH or JNLP, so the `kubernetes` plugin is not needed.
 
 **Credentials:**

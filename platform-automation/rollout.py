@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # ==============================================================================
@@ -35,6 +36,12 @@ SCAN_ORGS = [
     "your-github-org",
     # "another-org-to-scan",
 ]
+
+# --- Jenkins folder (optional) ---
+# If specified, Jenkins organization folders and credentials will be created
+# within this folder path instead of at the top level.
+# Leave empty for top-level creation. Example: "veracode" or "veracode/github"
+JENKINS_FOLDER = ""
 
 # --- Library version ---
 # Tag applied to the veracode-pipeline repo. Must match what Jenkinsfiles
@@ -103,6 +110,70 @@ JENKINS_TOKEN  = os.environ.get("JENKINS_TOKEN", JENKINS_USER).strip()
 BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 LIBRARY_DIR  = os.path.join(BASE, "library-repo")
 PLATFORM_DIR = os.path.join(BASE, "platform-automation")
+
+
+# ==============================================================================
+# JENKINS FOLDER HELPERS
+# ==============================================================================
+
+def _get_credential_store_path():
+    """
+    Return the Jenkins API path for the credential store.
+    If JENKINS_FOLDER is set, returns the folder-scoped store path.
+    Otherwise returns the global system store.
+    """
+    if not JENKINS_FOLDER or JENKINS_FOLDER.strip() == "":
+        return "/credentials/store/system/domain/_"
+    _ensure_jenkins_folder()
+    folder_path = JENKINS_FOLDER.strip("/").replace("/", "/job/")
+    return f"/job/{folder_path}/credentials/store/folder/domain/_"
+
+
+def _ensure_jenkins_folder():
+    """Create Jenkins folder(s) if they don't exist (handles nested paths)."""
+    if not JENKINS_FOLDER or JENKINS_FOLDER.strip() == "":
+        return
+    folders = [f.strip() for f in JENKINS_FOLDER.split("/") if f.strip()]
+    current_path = ""
+    for folder in folders:
+        current_path = f"{current_path}/{folder}" if current_path else folder
+        _create_folder_if_needed(current_path, folder)
+
+
+def _create_folder_if_needed(folder_path, folder_name):
+    """Create a single Jenkins folder if it does not already exist."""
+    field, crumb, opener = _jenkins_crumb()
+    headers = {**_jenkins_auth()}
+    if field:
+        headers[field] = crumb
+
+    folder_api_path = folder_path.replace("/", "/job/")
+    check_url = f"{JENKINS_URL}/job/{folder_api_path}/api/json"
+    req = urllib.request.Request(check_url, headers=headers)
+    try:
+        with opener.open(req, timeout=15):
+            return  # already exists
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            return
+
+    folder_config = """<?xml version='1.0' encoding='UTF-8'?>
+<com.cloudbees.hudson.plugins.folder.Folder plugin="cloudbees-folder">
+  <description></description>
+  <properties/>
+</com.cloudbees.hudson.plugins.folder.Folder>"""
+
+    headers_xml = {**headers, "Content-Type": "application/xml"}
+    create_url = f"{JENKINS_URL}/createItem?name={urllib.parse.quote(folder_name)}"
+    req = urllib.request.Request(
+        create_url, data=folder_config.encode(),
+        headers=headers_xml, method="POST")
+    try:
+        with opener.open(req, timeout=30):
+            print(f"  Created Jenkins folder: {folder_path}")
+    except urllib.error.HTTPError as e:
+        if e.code != 400:  # 400 can mean already exists
+            print(f"  WARNING creating folder {folder_path}: HTTP {e.code}")
 
 
 # ==============================================================================
@@ -244,7 +315,7 @@ def jenkins_script(groovy_code):
 
 def jenkins_upsert_credential(cred_xml):
     """
-    Create or update a Jenkins credential at the global scope.
+    Create or update a Jenkins credential at the configured scope (global or folder).
     Uses the XML credential API.
     """
     import xml.etree.ElementTree as ET
@@ -254,8 +325,10 @@ def jenkins_upsert_credential(cred_xml):
     if field:
         headers[field] = crumb
 
+    cred_store_path = _get_credential_store_path()
+
     # Try update first; if 404 fall through to create
-    update_url = (f"{JENKINS_URL}/credentials/store/system/domain/_/"
+    update_url = (f"{JENKINS_URL}{cred_store_path}/"
                   f"credential/{cred_id}/config.xml")
     req = urllib.request.Request(
         update_url, data=cred_xml.encode(), headers=headers, method="POST")
@@ -268,7 +341,7 @@ def jenkins_upsert_credential(cred_xml):
             print(f"  WARNING updating {cred_id}: {e.code} {e.read().decode()[:200]}")
 
     # Create
-    create_url = (f"{JENKINS_URL}/credentials/store/system/domain/_/"
+    create_url = (f"{JENKINS_URL}{cred_store_path}/"
                   f"createCredentials")
     req = urllib.request.Request(
         create_url, data=cred_xml.encode(), headers=headers, method="POST")
@@ -277,9 +350,6 @@ def jenkins_upsert_credential(cred_xml):
             print(f"  Created credential: {cred_id} (HTTP {r.status})")
     except urllib.error.HTTPError as e:
         print(f"  ERROR creating {cred_id}: {e.code} {e.read().decode()[:200]}")
-
-
-import urllib.parse
 
 
 # ==============================================================================
@@ -311,6 +381,9 @@ def step_github_repos():
 
 def step_jenkins_credentials():
     print("\n=== Step 2: Configure Jenkins credentials ===")
+
+    if JENKINS_FOLDER:
+        print(f"  Using Jenkins folder: {JENKINS_FOLDER}")
 
     # Veracode API ID (secret text)
     jenkins_upsert_credential(f"""
@@ -456,6 +529,16 @@ def step_onboard_orgs():
         f"@Field List<String> ORGS = {orgs_literal}",
         script, flags=re.DOTALL)
 
+    # Inject JENKINS_FOLDER if specified so the Groovy script uses the same folder
+    if JENKINS_FOLDER:
+        folder_literal = f"'{JENKINS_FOLDER}'"
+        if re.search(r"@Field\s+final\s+String\s+PARENT_FOLDER", script):
+            script = re.sub(
+                r"(@Field\s+final\s+String\s+PARENT_FOLDER\s*=\s*)['\"].*?['\"]",
+                f"\\1{folder_literal}",
+                script)
+        print(f"  Jenkins folder: {JENKINS_FOLDER}")
+
     print(f"  Scanning orgs: {SCAN_ORGS}")
     status, output = jenkins_script(script)
 
@@ -476,10 +559,12 @@ def step_onboard_orgs():
 def main():
     print("=" * 60)
     print("  Veracode + Jenkins rollout")
-    print(f"  Platform org : {PLATFORM_ORG}")
-    print(f"  Scan orgs    : {SCAN_ORGS}")
-    print(f"  Library ver  : {LIBRARY_VERSION}")
-    print(f"  Jenkins      : {JENKINS_URL}")
+    print(f"  Platform org   : {PLATFORM_ORG}")
+    print(f"  Scan orgs      : {SCAN_ORGS}")
+    if JENKINS_FOLDER:
+        print(f"  Jenkins folder : {JENKINS_FOLDER}")
+    print(f"  Library ver    : {LIBRARY_VERSION}")
+    print(f"  Jenkins        : {JENKINS_URL}")
     print("=" * 60)
 
     step_github_repos()
