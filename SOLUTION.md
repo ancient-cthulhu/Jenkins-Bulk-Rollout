@@ -124,19 +124,19 @@ All of the above live in the Jenkins credential store (encrypted at rest with th
 
 ### Phase 1: One-shot setup (rollout.py)
 
-Copy `platform-automation/rollout.example.py` to `rollout.py` (gitignored -- safe to put real values in), fill in the CONFIG block at the top, then run:
+Edit `rollout.py`, fill in the CONFIG block at the top, then run:
 
 ```bash
 python3 rollout.py
 ```
 
 The CONFIG block covers:
-- `PLATFORM_ORG` -- the GitHub org that will host `veracode-pipeline` and `jenkins-platform`
-- `SCAN_ORGS` -- list of orgs Jenkins will scan (can be the same as `PLATFORM_ORG`)
-- `GITHUB_TOKEN` -- PAT with `repo` scope for creating the two platform repos
-- `VC_API_ID` / `VC_API_KEY` -- Veracode API credentials
-- `SCM_USER` / `SCM_TOKEN` -- the `scm-readonly` GitHub PAT (stored in Jenkins)
-- `JENKINS_URL` / `JENKINS_USER` / `JENKINS_TOKEN` -- Jenkins admin access
+- `PLATFORM_ORG` - the GitHub org that will host `veracode-pipeline` and `jenkins-platform`
+- `SCAN_ORGS` - list of orgs Jenkins will scan (can be the same as `PLATFORM_ORG`)
+- `GITHUB_TOKEN` - PAT with `repo` scope for creating the two platform repos
+- `VC_API_ID` / `VC_API_KEY` - Veracode API credentials
+- `SCM_USER` / `SCM_TOKEN` - the `scm-readonly` GitHub PAT (stored in Jenkins)
+- `JENKINS_URL` / `JENKINS_USER` / `JENKINS_TOKEN` - Jenkins admin access
 
 In a single run this script:
 1. Creates the `veracode-pipeline` repo in your platform org, pushes the shared library, and tags it `v1`
@@ -172,7 +172,7 @@ This phase happens after the pilot is confirmed green on one org.
 
 **Enable SCA + IaC across all orgs (immediate, no toolchain dependency)**
 
-SCA and IaC/secrets run directly on the checked-out source -- they do not compile
+SCA and IaC/secrets run directly on the checked-out source - they do not compile
 the code, so no build toolchain is needed on the agent. They work on every repo
 immediately after the Jenkinsfile PR is merged. Run the bulk-PR script for each
 remaining org and merge the PRs. Scanning starts on the next push.
@@ -180,10 +180,10 @@ remaining org and merge the PRs. Scanning starts on the next push.
 **Enable SAST org by org as the toolchains on the SAST pool are confirmed**
 
 SAST requires the source code to be compiled. The pipeline handles this
-automatically using Docker -- it detects the language and pulls the right container
+automatically using Docker - it detects the language and pulls the right container
 image (Maven for Java, .NET SDK for C#, etc.). Before enabling SAST on an org,
 confirm that:
-- Docker is available on the Jenkins agent (see library README -- Agent requirements)
+- Docker is available on the Jenkins agent (see library README - Agent requirements)
 - The `docker-workflow` plugin is installed on the controller
 - The agent can reach Docker Hub (or your internal registry) to pull images
 
@@ -209,7 +209,7 @@ The bulk-PR script already uses `v1` by default (`--lib-version v1`). Any repo
 still pointing at `@main` should be updated. From this point on, library changes
 go through a proper tag cycle: develop on a branch, canary one org with
 `@veracode-pipeline@<branch>`, tag as `v2` when confirmed, promote orgs in waves.
-Roll back any org by re-pinning its Jenkinsfile to `@v1` -- the old tag is always
+Roll back any org by re-pinning its Jenkinsfile to `@v1` - the old tag is always
 intact.
 
 
@@ -237,7 +237,7 @@ script for the new org. The scan PAT must be a member of the new org. Nothing el
 - SCA and IaC/secrets are non-gating by default (report, do not fail the build).
 - SAST runs only on the default branch, detected via `BRANCH_IS_PRIMARY`; PRs are always excluded.
 - App profile per repo = `org/repo`. SCA results land in the per-org workspace selected by that org's token.
-- SAST autopackages by detecting the language and pulling a Docker container image matching the toolchain (Maven, .NET SDK, Node, etc.) -- same approach as the Veracode GitHub Actions workflow on `ubuntu-latest`. Requires Docker on the agent. See `library-repo/README.md` for the full language-to-image map.
+- SAST autopackages by detecting the language and pulling a Docker container image matching the toolchain (Maven, .NET SDK, Node, etc.) - same approach as the Veracode GitHub Actions workflow on `ubuntu-latest`. Requires Docker on the agent. See `library-repo/README.md` for the full language-to-image map.
 - Incomplete or stuck SAST scans on the platform are cleared automatically via `-deleteincompletescan 1` on each upload.
 
 ### Jenkins UI buttons
