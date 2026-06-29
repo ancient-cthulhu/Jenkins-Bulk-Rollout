@@ -90,7 +90,7 @@ The library auto-detects the agent OS with `isUnix()` and runs the bash or Power
 
 The SAST stage compiles the repo's source code to produce a scannable artifact, exactly like the Veracode GitHub Actions workflow running on `ubuntu-latest`. There are two ways to provide the build toolchain:
 
-**Option A -- Docker on the agent (recommended)**
+**Option A - Docker on the agent (recommended)**
 
 Install Docker on the Jenkins agent and install the `docker-workflow` plugin on the controller. The pipeline auto-detects the repo language from build files (`pom.xml`, `*.csproj`, `package.json`, etc.) and pulls the matching container image to compile inside. No toolchain installation on the agent itself is needed.
 
@@ -120,11 +120,11 @@ veracodePipeline(sastImage: 'maven:3.9-eclipse-temurin-21')
 ```
 Or set `VERACODE_SAST_IMAGE` as an environment variable on the org folder. Set to `none` to disable containerized builds and always use the bare agent.
 
-**Option B -- Pre-installed toolchain on the agent**
+**Option B - Pre-installed toolchain on the agent**
 
 Install the required language toolchains directly on the Jenkins agent (JDK + Maven/Gradle, .NET SDK, Node, etc.). Use `VERACODE_SAST_AGENT_LABEL` to route SAST jobs to agents that have the right toolchain. Set `sastImage: 'none'` to skip Docker detection.
 
-**Option C -- Custom build steps**
+**Option C - Custom build steps**
 
 For repos with complex builds, pass a `buildSteps` closure. See "Complex builds" above.
 
