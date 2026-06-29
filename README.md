@@ -1,6 +1,6 @@
 # Veracode Security Pipeline for Jenkins
 
-Automated Veracode security scanning across GitHub organizations, delivered as a Jenkins Shared Library. Drop a 2-line `Jenkinsfile` into any repo and it gets SCA, IaC/secrets, and SAST on every push -- beside the team's existing build, never inside it.
+Automated Veracode security scanning across GitHub organizations, delivered as a Jenkins Shared Library. Drop a 2-line `Jenkinsfile` into any repo and it gets SCA, IaC/secrets, and SAST on every push, beside the team's existing build.
 
 <p align="center">
   <img src="architecture.svg" alt="Veracode + Jenkins Architecture" width="1000">
@@ -49,9 +49,9 @@ The shared library handles everything: Veracode CLI install, SCA agent download,
 
 ## Rollout in 5 steps
 
-1. **Run `rollout.py`** -- creates the two platform repos, registers the library in Jenkins, configures credentials, runs onboarding
-2. **Scan Organization** in Jenkins -- discovers all repos in the org
-3. **Merge Jenkinsfile PRs** -- `bulk_add_jenkinsfile.py` opens them, teams merge them
+1. **Run `rollout.py`** - creates the two platform repos, registers the library in Jenkins, configures credentials, runs onboarding
+2. **Scan Organization** in Jenkins - discovers all repos in the org
+3. **Merge Jenkinsfile PRs** - `bulk_add_jenkinsfile.py` opens them, teams merge them
 4. Scanning starts automatically on the next push
 5. Results appear in [platform.veracode.com](https://platform.veracode.com)
 
