@@ -1,6 +1,0 @@
-# Tier-1 Docker test harness -- local dev only, not for clients
-tier1-test/
-
-# OS noise
-.DS_Store
-Thumbs.db
