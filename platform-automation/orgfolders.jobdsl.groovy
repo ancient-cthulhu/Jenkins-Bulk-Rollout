@@ -9,7 +9,7 @@
 // The only per-org binding is the SCA token (the SCA workspace is per org). It is
 // attached as a folder-scoped credential with id 'srcclr-api-token' on each folder,
 // not set here, since it is a secret. Per-repo settings (source dir, library
-// version, branch handling) live in each repo's Jenkinsfile and .veracode.yml.
+// version, branch handling) live in each repo's Jenkinsfile via veracodePipeline().
 // =============================================================================
 
 def ORGS = [

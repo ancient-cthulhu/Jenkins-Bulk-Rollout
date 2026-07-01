@@ -86,8 +86,9 @@ platform-automation/        → push as "jenkins-platform" repo
 
 consumer-repo-files/        → added to each scanned repo by the bulk-PR script
   Jenkinsfile                     2 lines
-  .veracode.yml                   optional per-repo scan tuning
 ```
+
+Per-repo tuning (source dir, app name, custom build steps, library version) is done directly in that repo's `Jenkinsfile` via `veracodePipeline(...)` config, not a separate config file. See `library-repo/README.md` for the full option list.
 
 ---
 

@@ -1,7 +1,8 @@
-// Veracode security scans (SCA + IaC/secrets on every build, SAST/Policy on
-// the default branch after a merge). All logic lives in the shared library; this file only
-// selects the library version. To diverge this repo, pin a different tag or
-// pass overrides, for example:
+// Veracode security scans (SCA + IaC/secrets on every triggered scan,
+// SAST/Policy when the default branch is scanned). All logic lives in the
+// shared library; this file only selects the library version. Scans run on
+// demand (Jenkins UI or trigger-scan.sh/.ps1), not automatically. To diverge
+// this repo, pin a different tag or pass overrides, for example:
 //   veracodePipeline(appName: 'org/this-repo', sourceDir: 'app', topLevelBranches: 'main|release/.*')
 @Library('veracode-pipeline@v1') _
 

@@ -3,10 +3,21 @@
     rollout.ps1 -- PowerShell port of rollout.py. Same steps, same
     Jenkins/GitHub REST calls, no Python required.
 
+.DESCRIPTION
+    This file (rollout.ps1) is the safe template: placeholder values only,
+    fine to commit as-is. Before running it for real, copy it to
+    rollout.example.ps1 (covered by .gitignore, so it can never be committed
+    with real values in it), fill in the CONFIG block in that copy, then
+    run it:
+        Copy-Item rollout.ps1 rollout.example.ps1
+        .\rollout.example.ps1
+
+    Editing and running rollout.ps1 directly also works, but then be
+    deliberate about not committing it once CONFIG holds real org names,
+    tokens, or URLs.
+
 .NOTES
     Requires: PowerShell 5.1+ (or pwsh 7+), git on PATH.
-    Copy this file, fill in the CONFIG block below, and run it:
-        .\rollout.ps1
 #>
 
 $ErrorActionPreference = "Stop"

@@ -3,11 +3,18 @@
 # rollout.sh -- Bash port of rollout.py. Same steps, same Jenkins/GitHub REST
 # calls, no Python required.
 #
-# Requires: bash, curl, jq, git. Nothing else.
+# This file (rollout.sh) is the safe template: placeholder values only, fine
+# to commit as-is. Before running it for real, copy it to rollout.example.sh
+# (covered by .gitignore, so it can never be committed with real values in
+# it), fill in the CONFIG block in that copy, then run it:
+#   cp rollout.sh rollout.example.sh
+#   chmod +x rollout.example.sh
+#   ./rollout.example.sh
 #
-# Copy this file, fill in the CONFIG block below, and run it:
-#   chmod +x rollout.sh
-#   ./rollout.sh
+# Editing and running rollout.sh directly also works, but then be deliberate
+# about not committing it once CONFIG holds real org names, tokens, or URLs.
+#
+# Requires: bash, curl, jq, git. Nothing else.
 #
 set -euo pipefail
 

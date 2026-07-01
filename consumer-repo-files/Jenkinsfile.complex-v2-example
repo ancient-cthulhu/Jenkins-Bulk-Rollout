@@ -2,6 +2,11 @@
 // artifact here (multi-module build), so this repo supplies its own build via
 // buildSteps and pins the version that supports it.
 //
+// NOTE: this pins @v2. That tag will not exist until you actually cut it
+// (see library-repo/README.md, "Cut a new version"). buildSteps itself works
+// fine on @v1 too -- copy this file's veracodePipeline(...) block and change
+// @v2 to @v1 if you have not tagged v2 yet.
+//
 // Contract:
 //   - buildSteps MUST leave scannable artifacts in verascan/ (SAST/Policy uploads it).
 //   - sourceDir is independent: it feeds SCA + IaC/secrets, so keep it on real source,

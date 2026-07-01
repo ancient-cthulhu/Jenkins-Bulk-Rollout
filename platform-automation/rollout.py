@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """
-rollout.example.py -- Template for rollout.py.
+rollout.py -- One-shot Veracode + Jenkins platform setup.
 
-Copy this file to rollout.py, fill in the CONFIG section, and run it.
-This file is safe to commit -- it contains no real credentials.
+This file (rollout.py) is the safe template: placeholder values only, no
+real credentials, fine to commit as-is.
 
-See rollout.py for the working version.
+Before running it for real: copy it to rollout.example.py (already covered
+by .gitignore, so it can never be committed with real values in it), fill in
+the CONFIG block in that copy, then run:
+
+    python3 rollout.example.py
+
+Editing and running rollout.py directly also works, but then be deliberate
+about not committing it once the CONFIG block holds real org names, tokens,
+or URLs. See platform-automation/README.md for the shell (rollout.sh) and
+PowerShell (rollout.ps1) equivalents, same convention.
 """
 
 import base64

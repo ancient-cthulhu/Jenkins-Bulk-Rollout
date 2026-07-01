@@ -17,18 +17,21 @@ What the CI/platform team applies to the controller and runs once per org.
 
 ## Quickstart - one-shot setup with rollout.py
 
-`rollout.py` is the single entry point. Fill in the config, run it once:
+`rollout.py` is the single entry point (`rollout.sh` / `rollout.ps1` are equivalent, for teams without Python -- same steps, same CONFIG block, see "Files in this directory" below).
+
+The committed file has placeholder values only and is safe to commit as-is. Before running it for real, copy it locally to a `rollout.example.*` filename (already covered by `.gitignore`, so it can never be committed with real values in it), fill in the CONFIG block in that copy, and run the copy:
 
 ```bash
-# edit rollout.py: fill in PLATFORM_ORG, SCAN_ORGS, credentials, JENKINS_URL
-python3 rollout.py
+cp rollout.py rollout.example.py
+# edit rollout.example.py: fill in PLATFORM_ORG, SCAN_ORGS, credentials, JENKINS_URL
+python3 rollout.example.py
 ```
 
 **What it does in one run:**
 1. Creates the `veracode-pipeline` repo in your platform org, pushes the shared library, tags it `v1`
 2. Creates the `jenkins-platform` repo and pushes all platform automation
 3. Upserts `veracode-api-id`, `veracode-api-key`, and `scm-readonly` credentials in Jenkins
-4. Configures the GitHub Server entry in Jenkins (no webhook registration -- org folders poll GitHub on a schedule instead, so Jenkins never receives inbound calls from GitHub)
+4. Configures the GitHub Server entry in Jenkins (no webhook registration and no polling -- this deployment is ad hoc only, so Jenkins never receives inbound calls from GitHub and never reaches out on its own schedule either)
 5. Registers the `veracode-pipeline` shared library on the controller pointing at your org
 6. Runs `veracode-onboard.groovy` via the Script Console - creates one Organization Folder per org, mints each org's Veracode SCA workspace token, binds it as `srcclr-api-token`
 
@@ -142,11 +145,13 @@ python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --delete --ye
 
 ## Jenkins UI -- how the buttons work
 
-| Button | What it does |
-|--------|-------------|
-| **Scan Organization** | Indexes the org, discovers repos with a Jenkinsfile, registers them as pipeline jobs, and triggers a build on the default branch of any newly discovered repo |
-| **Scan Repository Now** | Same as above for one repo |
-| **Build Now** (on a branch job) | Triggers a scan on that specific branch immediately |
+| Button | What it does | Script equivalent |
+|--------|-------------|--------------------|
+| **Scan Organization** | Indexes the org, discovers repos with a Jenkinsfile, registers them as pipeline jobs, and triggers a build on the default branch of any newly discovered repo | `trigger-scan.sh --org <org>` |
+| **Scan Repository Now** | Same as above for one repo | `trigger-scan.sh --org <org> --repo <repo>` |
+| **Build Now** (on a branch job) | Triggers a scan on that specific branch immediately | `trigger-scan.sh --org <org> --repo <repo> --branch <branch>` |
+
+`trigger-scan.ps1` is the PowerShell equivalent. Both need the same `JENKINS_URL` reachability as `rollout.py`/`.sh`/`.ps1`.
 
 ---
 
@@ -173,9 +178,13 @@ If Docker is not available, install the language toolchain directly on the agent
 
 | File | Purpose |
 |------|---------|
-| `rollout.py` | Safe template with dummy values - commit this. Clients copy to `rollout.example.py`, fill in real values, run it |
-| `jenkins.casc.yaml` | JCasC: registers the shared library and root credentials (alternative to rollout.py steps 2-3) |
-| `veracode-onboard.groovy` | System Groovy script: creates org folders, mints + binds SCA tokens |
+| `rollout.py` | Safe template with dummy values - commit this. Copy locally to `rollout.example.py` (gitignored), fill in real values, run the copy |
+| `rollout.sh` | Bash equivalent of `rollout.py`, same convention (copy to `rollout.example.sh`) -- for teams without Python |
+| `rollout.ps1` | PowerShell equivalent of `rollout.py`, same convention (copy to `rollout.example.ps1`) -- for teams without Python |
+| `jenkins.casc.yaml` | JCasC: registers the shared library and root credentials (alternative to rollout.py steps 2-3). Requires `PLATFORM_ORG` set as an env var before applying |
+| `veracode-onboard.groovy` | System Groovy script: creates org folders, mints + binds SCA tokens. No automatic trigger is configured -- ad hoc only |
 | `bulk_add_jenkinsfile.py` | Opens PRs adding the 2-line Jenkinsfile to every repo in an org. `--delete` to reverse |
+| `trigger-scan.sh` | Ad hoc scan trigger (org / repo / branch) from a terminal, same effect as the Jenkins UI buttons |
+| `trigger-scan.ps1` | PowerShell equivalent of `trigger-scan.sh` |
 | `bind-sca-tokens.groovy` | Legacy helper (superseded by `veracode-onboard.groovy`) |
 | `orgfolders.jobdsl.groovy` | Legacy Job DSL seed (superseded by `veracode-onboard.groovy`) |

@@ -52,8 +52,12 @@ import javax.crypto.spec.SecretKeySpec
 import java.security.SecureRandom
 
 // ---- config -----------------------------------------------------------------
+// PLACEHOLDER -- replace before running standalone via Script Console.
+// If run through rollout.py/.sh/.ps1, this whole block is overwritten
+// automatically from SCAN_ORGS; this default only matters if you paste
+// this script into the Script Console directly.
 @Field List<String> ORGS = [
-    'Veracode-CSE-Demos',
+    'your-github-org',
     // add more orgs here and re-run
 ]
 

@@ -6,10 +6,10 @@ Open-source Jenkins, many orgs. Veracode SCA, IaC/secrets, and SAST are availabl
 
 ## 1. Summary
 
-We add Veracode scanning as a separate pipeline that runs beside each team's build, triggered by the same Git events. All logic lives in one shared library; each repo gets a 2-line `Jenkinsfile` that calls it. Jenkins Organization Folders auto-discover every repo per org.
+We add Veracode scanning as a separate pipeline that runs beside each team's build, triggered on demand (no webhook, no polling -- see section 4). All logic lives in one shared library; each repo gets a 2-line `Jenkinsfile` that calls it. Jenkins Organization Folders auto-discover every repo per org.
 
-- **SCA** (dependencies) and **IaC/secrets**: every build, on the checked-out source. No build needed, so they cover every repo immediately.
-- **SAST**: the repo's default branch only, after a merge (never on PRs). Needs a build, so it is phased in per org.
+- **SCA** (dependencies) and **IaC/secrets**: any triggered scan, on the checked-out source. No build needed, so they cover every repo immediately once triggered.
+- **SAST**: only when the default branch is what gets scanned (never on PRs). Needs a build, so it is phased in per org.
 - **SCM auth**: a single read-only GitHub PAT (service account) lets Jenkins discover and check out repos across the orgs. This is the fast path for now; per-org GitHub Apps are a planned hardening step (see the note in section 4).
 
 
@@ -124,10 +124,12 @@ All of the above live in the Jenkins credential store (encrypted at rest with th
 
 ### Phase 1: One-shot setup (rollout.py)
 
-Edit `rollout.py`, fill in the CONFIG block at the top, then run:
+`rollout.py` (or `rollout.sh` / `rollout.ps1` for teams without Python) is committed with placeholder values only. Copy it locally to a `rollout.example.*` filename (gitignored, so real values can never be committed), fill in the CONFIG block in that copy, then run it:
 
 ```bash
-python3 rollout.py
+cp rollout.py rollout.example.py
+# edit rollout.example.py's CONFIG block
+python3 rollout.example.py
 ```
 
 The CONFIG block covers:
@@ -142,7 +144,7 @@ In a single run this script:
 1. Creates the `veracode-pipeline` repo in your platform org, pushes the shared library, and tags it `v1`
 2. Creates the `jenkins-platform` repo and pushes all platform automation
 3. Upserts `veracode-api-id`, `veracode-api-key`, and `scm-readonly` credentials in Jenkins
-4. Configures the GitHub Server entry in Jenkins (no webhook registration -- org folders poll GitHub on a schedule instead, so Jenkins never receives inbound calls from GitHub)
+4. Configures the GitHub Server entry in Jenkins (no webhook registration and no polling -- this deployment is ad hoc only, so Jenkins never receives inbound calls from GitHub and never reaches out on its own schedule either)
 5. Registers the `veracode-pipeline` shared library on the controller
 6. Runs `veracode-onboard.groovy` via the Script Console, which creates one Organization Folder per org, mints each org's Veracode SCA workspace token, and binds it as `srcclr-api-token`
 
