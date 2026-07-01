@@ -1,6 +1,6 @@
 # Veracode + Jenkins Integration Solution Document
 
-Open-source Jenkins, many orgs. Veracode SCA, IaC/secrets, and SAST run automatically on every repo, without modifying or risking any team's existing build.
+Open-source Jenkins, many orgs. Veracode SCA, IaC/secrets, and SAST are available on every repo, triggered on demand, without modifying or risking any team's existing build.
 
 ---
 
@@ -25,7 +25,7 @@ We add Veracode scanning as a separate pipeline that runs beside each team's bui
 
 Connection legend:
 - **C1** Controller discovers repos/branches/PRs in each org (read), using the shared scan account.
-- **C2** SCM webhook (push/PR) triggers indexing and builds.
+- **C2** SCM change detection: none automatic. No inbound webhook and no periodic poll -- Jenkins only checks GitHub when a scan is explicitly triggered (UI button or `trigger-scan.sh`/`.ps1`).
 - **C3** Controller fetches the shared library at build time.
 - **C4-C6** Agents download the Veracode CLI, SCA agent, and Java API wrapper.
 - **C7** SCA results upload to the org's Veracode workspace.
@@ -100,16 +100,16 @@ of every org it touches. Jenkins uses it for three things:
 All of the above live in the Jenkins credential store (encrypted at rest with the controller key). No external secrets manager is used. The SCA token is folder-scoped per org; the others are root. The `veracode-onboard` script reads `veracode-api-id`/`veracode-api-key`, mints each org's Jenkins SCA token from the Veracode API, and writes the per-org `srcclr-api-token`; wherever it runs (controller or a small admin agent) needs egress to `api.veracode.com`.
 
 **SCM permissions (GitHub PAT, service account):**
-- *Scan account* (`scm-readonly`, in Jenkins): GitHub classic PAT with `repo` and `read:org`, plus `admin:org_hook` only if Jenkins auto-registers the org webhook (omit it and create the webhook manually otherwise). The account must be a member of each org it scans, and is reused to fetch the shared library.
+- *Scan account* (`scm-readonly`, in Jenkins): GitHub classic PAT with `repo` and `read:org`. No `admin:org_hook` scope needed and no webhook is registered: this deployment is egress-only and trigger-free by default, scans run only when explicitly requested (see "No automatic triggers" below). The account must be a member of each org it scans, and is reused to fetch the shared library.
 - *Push token* (rollout script only, via `GITHUB_TOKEN`, not stored in Jenkins): GitHub PAT with `repo`.
 
-> Planned hardening (revisit after go-live): replace the shared PAT with one GitHub App per org, stored folder-scoped, for per-org isolation, short-lived auto-rotated tokens, app-level webhooks (drops `admin:org_hook`), and no shared account or seat.
+> Planned hardening (revisit after go-live): replace the shared PAT with one GitHub App per org, stored folder-scoped, for per-org isolation, short-lived auto-rotated tokens, and no shared account or seat.
 
 **Agents:** Use labels so SAST jobs land on agents that carry each language's build toolchain (SAST autopackaging compiles); SCA + IaC are light and can run on any agent. Throttle first-run indexing and roll out in waves so the org folders do not saturate the pool. Optional optimization (not required now): pre-cache the Veracode CLI, the SCA agent, and the Java API wrapper on the agents to cut egress and build time. The library already prefers an on-PATH `veracode` binary, so a cached install is picked up automatically; pin the Java wrapper to a cached jar instead of resolving the latest each run.
 
 **Network egress from agents:** `tools.veracode.com`, `sca-downloads.veracode.com`, `repo1.maven.org`, your Veracode region API host (`api.veracode.com` / `analysiscenter.veracode.com`, or EU/Federal), your GitHub host (`github.com` or GitHub Enterprise), and the language package mirrors the SAST build resolves. The Veracode tool downloads (CLI, SCA agent, API wrapper) can be cached or pre-installed on the agents to avoid re-fetching every build (optional, see Agents).
 
-**Inbound webhook (one per org):** GitHub `/github-webhook/` to the controller.
+**No automatic triggers, ad hoc only:** no webhook is registered (`manageHooks=false`) and no periodic poll is configured. Jenkins never receives an inbound call from GitHub, and never reaches out to GitHub on its own schedule either. The only automatic scan is a one-time indexing pass when an org folder is first created; after that, every scan is explicitly requested. Use the Jenkins UI ("Scan Organization Now" / "Scan Repository Now" / "Build Now") or `trigger-scan.sh` / `trigger-scan.ps1` (`platform-automation/`) to trigger an org scan, repo scan, or single-branch build on demand, run from the same location as the rollout script (controller or bastion with Jenkins reachability). See section 6 for the full trigger reference.
 
 ---
 
@@ -142,7 +142,7 @@ In a single run this script:
 1. Creates the `veracode-pipeline` repo in your platform org, pushes the shared library, and tags it `v1`
 2. Creates the `jenkins-platform` repo and pushes all platform automation
 3. Upserts `veracode-api-id`, `veracode-api-key`, and `scm-readonly` credentials in Jenkins
-4. Configures the GitHub Server entry in Jenkins (enables webhook auto-registration)
+4. Configures the GitHub Server entry in Jenkins (no webhook registration -- org folders poll GitHub on a schedule instead, so Jenkins never receives inbound calls from GitHub)
 5. Registers the `veracode-pipeline` shared library on the controller
 6. Runs `veracode-onboard.groovy` via the Script Console, which creates one Organization Folder per org, mints each org's Veracode SCA workspace token, and binds it as `srcclr-api-token`
 
@@ -175,7 +175,7 @@ This phase happens after the pilot is confirmed green on one org.
 SCA and IaC/secrets run directly on the checked-out source - they do not compile
 the code, so no build toolchain is needed on the agent. They work on every repo
 immediately after the Jenkinsfile PR is merged. Run the bulk-PR script for each
-remaining org and merge the PRs. Scanning starts on the next push.
+remaining org and merge the PRs. Scanning starts once someone triggers it (Jenkins UI or `trigger-scan.sh`/`.ps1`).
 
 **Enable SAST org by org as the toolchains on the SAST pool are confirmed**
 
@@ -227,12 +227,14 @@ script for the new org. The scan PAT must be a member of the new org. Nothing el
 
 ---
 
-## 6. Scan behavior (what runs, when)
+## 6. Scan behavior (what runs, when a scan is triggered)
 
-| Trigger | SCA | IaC/secrets | SAST/Policy |
+This table describes what a scan covers once it runs, not when it runs automatically, because nothing runs automatically in this deployment (see section 4, "No automatic triggers, ad hoc only"). Every row below only happens after someone explicitly triggers a scan via the Jenkins UI or `trigger-scan.sh`/`.ps1`.
+
+| Context | SCA | IaC/secrets | SAST/Policy |
 |---------|-----|-------------|-------------|
-| PR / feature branch | yes | yes | no |
-| Merge to default branch | yes | yes | yes |
+| PR / feature branch scanned | yes | yes | no |
+| Default branch scanned | yes | yes | yes |
 
 - SCA and IaC/secrets are non-gating by default (report, do not fail the build).
 - SAST runs only on the default branch, detected via `BRANCH_IS_PRIMARY`; PRs are always excluded.
@@ -242,11 +244,13 @@ script for the new org. The scan PAT must be a member of the new org. Nothing el
 
 ### Jenkins UI buttons
 
-| Button | Where | What it does |
-|--------|-------|-------------|
-| **Scan Organization** | Org folder | Indexes the org, discovers repos with a Jenkinsfile, registers them as pipeline jobs, and triggers a build on the default branch of newly discovered repos |
-| **Scan Repository Now** | Repo inside org folder | Same as above for one repo |
-| **Build Now** | Branch job (e.g. `main`) | Triggers a scan on that branch immediately |
+| Button | Where | What it does | Script equivalent |
+|--------|-------|-------------|--------------------|
+| **Scan Organization** | Org folder | Indexes the org, discovers repos with a Jenkinsfile, registers them as pipeline jobs, and triggers a build on the default branch of newly discovered repos | `trigger-scan.sh --org <org>` |
+| **Scan Repository Now** | Repo inside org folder | Same as above for one repo | `trigger-scan.sh --org <org> --repo <repo>` |
+| **Build Now** | Branch job (e.g. `main`) | Triggers a scan on that branch immediately | `trigger-scan.sh --org <org> --repo <repo> --branch <branch>` |
+
+`trigger-scan.ps1` is the PowerShell equivalent. Both are in `platform-automation/` and use the same auth/crumb pattern as the rollout script, so they need the same network reachability to `JENKINS_URL` (controller or bastion, not a local laptop with no path to Jenkins).
 
 ---
 

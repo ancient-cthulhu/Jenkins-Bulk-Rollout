@@ -30,7 +30,6 @@ import hudson.util.Secret
 
 import com.cloudbees.hudson.plugins.folder.Folder
 import com.cloudbees.hudson.plugins.folder.AbstractFolder
-import com.cloudbees.hudson.plugins.folder.computed.PeriodicFolderTrigger
 import com.cloudbees.hudson.plugins.folder.computed.DefaultOrphanedItemStrategy
 import com.cloudbees.hudson.plugins.folder.properties.FolderCredentialsProvider.FolderCredentialsProperty
 
@@ -203,7 +202,15 @@ OrganizationFolder ensureOrgFolder(Folder parent, String org) {
     of.navigators.replace(nav)
 
     of.projectFactories.replace(new WorkflowMultiBranchProjectFactory())
-    of.addTrigger(new PeriodicFolderTrigger('1d'))
+    // No webhook is registered anywhere in this deployment (see rollout.py
+    // step_github_server: manageHooks=false), and no periodic poll either.
+    // Jenkins never initiates or receives any scan on its own -- everything
+    // is ad hoc, triggered on demand via the Jenkins UI ("Scan Organization
+    // Now" / "Scan Repository Now" / "Build Now") or via trigger-scan.sh /
+    // trigger-scan.ps1 (platform-automation/). Jenkins does run one indexing
+    // pass automatically when this org folder is first created (that is a
+    // one-time bootstrap, not a recurring trigger); after that nothing scans
+    // again until someone explicitly asks it to.
     of.orphanedItemStrategy = new DefaultOrphanedItemStrategy(true, '7', '50')
     of.save()
     return of

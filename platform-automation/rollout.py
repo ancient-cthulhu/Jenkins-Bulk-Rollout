@@ -420,18 +420,19 @@ def step_jenkins_credentials():
 
 
 # ==============================================================================
-# STEP 4: Configure GitHub Server (enables webhook auto-registration)
+# STEP 4: Configure GitHub Server (API rate-limit registration only)
 # ==============================================================================
+#
+# NOTE: manageHooks is intentionally False. This deployment is egress-only --
+# Jenkins must never receive inbound calls from GitHub, and this deployment
+# has no automatic trigger at all: no webhook, no periodic poll. Every scan
+# is ad hoc (Jenkins UI or trigger-scan.sh/.ps1). This step still registers
+# the GitHub Server entry because it is how the GitHub Branch Source plugin
+# tracks API rate-limit usage against the scm-readonly credential; it does
+# not open any inbound path and does not schedule anything on its own.
 
 def step_github_server():
-    """
-    Register a GitHub Server entry in Jenkins System config using the
-    scm-readonly credential. This is what enables the GitHub Branch Source
-    plugin to automatically register org-level webhooks when an org folder
-    runs its first scan -- without it, no webhooks get created and builds
-    only trigger on the daily periodic re-index.
-    """
-    print("\n=== Step 4: Configure GitHub Server ===")
+    print("\n=== Step 4: Configure GitHub Server (no webhook registration) ===")
 
     api_url = GITHUB_API if GITHUB_API != "https://api.github.com" else "https://api.github.com"
 
@@ -448,13 +449,13 @@ servers.removeIf {{ it.apiUrl == '{api_url}' }}
 
 def server = new GitHubServerConfig('scm-readonly')
 server.apiUrl          = '{api_url}'
-server.manageHooks     = true
+server.manageHooks     = false
 server.clientCacheSize = 20
 servers.add(server)
 
 config.configs = servers
 config.save()
-println "GitHub Server registered: {api_url} (manageHooks=true, credential=scm-readonly)"
+println "GitHub Server registered: {api_url} (manageHooks=false, no inbound webhook, credential=scm-readonly)"
 """
     status, output = jenkins_script(groovy)
     if status == 200 and "GitHub Server registered" in output:

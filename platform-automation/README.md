@@ -28,7 +28,7 @@ python3 rollout.py
 1. Creates the `veracode-pipeline` repo in your platform org, pushes the shared library, tags it `v1`
 2. Creates the `jenkins-platform` repo and pushes all platform automation
 3. Upserts `veracode-api-id`, `veracode-api-key`, and `scm-readonly` credentials in Jenkins
-4. Configures the GitHub Server entry in Jenkins (enables webhook auto-registration)
+4. Configures the GitHub Server entry in Jenkins (no webhook registration -- org folders poll GitHub on a schedule instead, so Jenkins never receives inbound calls from GitHub)
 5. Registers the `veracode-pipeline` shared library on the controller pointing at your org
 6. Runs `veracode-onboard.groovy` via the Script Console - creates one Organization Folder per org, mints each org's Veracode SCA workspace token, binds it as `srcclr-api-token`
 
@@ -130,7 +130,7 @@ python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 \
     --skip-archived --skip-forks --yes
 ```
 
-Review and merge the PRs. Once merged, the Organization Folder discovers each repo on the next push or scheduled re-index and scanning begins.
+Review and merge the PRs. Once merged, trigger a scan (Jenkins UI or `trigger-scan.sh`/`.ps1`) to discover each repo and start scanning; nothing runs automatically.
 
 **To remove Jenkinsfiles later** (offboard an org):
 ```bash

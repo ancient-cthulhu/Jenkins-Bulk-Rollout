@@ -1,6 +1,8 @@
 # Veracode Security Pipeline for Jenkins
 
-Automated Veracode security scanning across GitHub organizations, delivered as a Jenkins Shared Library. Drop a 2-line `Jenkinsfile` into any repo and it gets SCA, IaC/secrets, and SAST on every push, beside the team's existing build.
+Automated Veracode security scanning across GitHub organizations, delivered as a Jenkins Shared Library. Drop a 2-line `Jenkinsfile` into any repo and it gets SCA, IaC/secrets, and SAST, beside the team's existing build.
+
+> **This deployment triggers on demand only.** No webhook and no periodic polling are configured (see "Trigger model" below); scans run when someone explicitly triggers them via the Jenkins UI or `trigger-scan.sh` / `trigger-scan.ps1`.
 
 <p align="center">
   <img src="architecture.svg" alt="Veracode + Jenkins Architecture" width="1000">
@@ -10,15 +12,24 @@ Automated Veracode security scanning across GitHub organizations, delivered as a
 
 ## What it does
 
-Every repo that opts in gets three scans running automatically:
+Every repo that opts in gets three scans available, run on demand:
 
 | Scan | When | What it covers |
 |------|------|----------------|
-| **SCA** (Software Composition Analysis) | Every push, every branch | Open source dependencies and license risk |
-| **IaC + Secrets** | Every push, every branch | Infrastructure misconfigurations and hardcoded secrets |
-| **SAST + Policy** | Default branch only (post-merge) | First-party code, compiled and scanned against your Veracode policy |
+| **SCA** (Software Composition Analysis) | Ad hoc, any branch | Open source dependencies and license risk |
+| **IaC + Secrets** | Ad hoc, any branch | Infrastructure misconfigurations and hardcoded secrets |
+| **SAST + Policy** | Ad hoc, default branch only | First-party code, compiled and scanned against your Veracode policy |
 
 Scans run on a dedicated pipeline beside each team's build. No changes to existing CI. No risk to existing deployments. The only thing added to a product repo is a 2-line `Jenkinsfile`.
+
+## Trigger model
+
+There is no automatic trigger of any kind in this deployment:
+
+- **No webhook.** Jenkins never receives an inbound call from GitHub (`manageHooks=false`).
+- **No periodic polling.** Org folders do not auto-reindex on a schedule.
+
+Jenkins does run one indexing pass automatically the first time an org folder is created (a one-time bootstrap, not a recurring trigger). After that, every scan is explicitly requested, either from the Jenkins UI ("Scan Organization Now" / "Scan Repository Now" / "Build Now") or by running `trigger-scan.sh` / `trigger-scan.ps1` (`platform-automation/`) from somewhere with network access to Jenkins. See `SOLUTION.md` section 6 for the full trigger reference.
 
 ---
 
@@ -52,8 +63,8 @@ The shared library handles everything: Veracode CLI install, SCA agent download,
 1. **Run `rollout.py`** - creates the two platform repos, registers the library in Jenkins, configures credentials, runs onboarding
 2. **Scan Organization** in Jenkins - discovers all repos in the org
 3. **Merge Jenkinsfile PRs** - `bulk_add_jenkinsfile.py` opens them, teams merge them
-4. Scanning starts automatically on the next push
-5. Results appear in [platform.veracode.com](https://platform.veracode.com)
+4. **Trigger a scan** - Jenkins UI ("Scan Organization Now" / "Scan Repository Now" / "Build Now") or `trigger-scan.sh` / `trigger-scan.ps1`; nothing scans automatically
+5. Results appear in [platform.veracode.com](https://platform.veracode.com) after each ad hoc scan
 
 The entire rollout touches no existing build pipelines and is reversible: `bulk_add_jenkinsfile.py --delete` opens PRs to remove the `Jenkinsfile` from every repo.
 
@@ -86,7 +97,7 @@ consumer-repo-files/        → added to each scanned repo by the bulk-PR script
 |---|---|---|
 | Product repos | Unchanged | +1 `Jenkinsfile` (2 lines) |
 | Jenkins | Unchanged | +1 shared library, +1 org folder per scanned org |
-| GitHub | Unchanged | +2 platform repos, +1 org webhook per scanned org |
+| GitHub | Unchanged | +2 platform repos (no webhook, no polling -- Jenkins never calls out or is called into automatically; scans are ad hoc only) |
 | Veracode | Unchanged | +1 app profile per repo, +1 SCA workspace per org |
 
 No agents are replaced. No existing pipelines are modified. No credentials are stored outside Jenkins.

@@ -382,12 +382,18 @@ function Step-JenkinsCredentials {
 }
 
 # ==============================================================================
-# STEP 3: Configure GitHub Server (enables webhook auto-registration)
+# STEP 3: Configure GitHub Server (no webhook, no polling -- ad hoc only)
 # ==============================================================================
 
 function Step-GitHubServer {
     Write-Host ""
-    Write-Host "=== Step 3: Configure GitHub Server ==="
+    Write-Host "=== Step 3: Configure GitHub Server (no webhook registration) ==="
+    # manageHooks=false intentionally -- this deployment is egress-only and
+    # has no automatic trigger at all: no webhook, no periodic poll. Every
+    # scan is ad hoc (Jenkins UI or trigger-scan.sh/.ps1). This step still
+    # registers the GitHub Server entry because it's how the plugin tracks
+    # API rate-limit usage against scm-readonly; it does not open any
+    # inbound path.
 
     $groovy = @"
 import jenkins.model.Jenkins
@@ -400,13 +406,13 @@ servers.removeIf { it.apiUrl == '$GITHUB_API' }
 
 def server = new GitHubServerConfig('scm-readonly')
 server.apiUrl          = '$GITHUB_API'
-server.manageHooks     = true
+server.manageHooks     = false
 server.clientCacheSize = 20
 servers.add(server)
 
 config.configs = servers
 config.save()
-println "GitHub Server registered: $GITHUB_API (manageHooks=true, credential=scm-readonly)"
+println "GitHub Server registered: $GITHUB_API (manageHooks=false, no inbound webhook, credential=scm-readonly)"
 "@
     $result = Invoke-JenkinsScript $groovy
     if ($result.Status -eq 200 -and $result.Output -match "GitHub Server registered") {
