@@ -16,9 +16,11 @@ Every repo that opts in gets three scans available, run on demand:
 
 | Scan | When | What it covers |
 |------|------|----------------|
-| **SCA** (Software Composition Analysis) | Ad hoc, any branch | Open source dependencies and license risk |
-| **IaC + Secrets** | Ad hoc, any branch | Infrastructure misconfigurations and hardcoded secrets |
+| **SCA** (Software Composition Analysis) | Ad hoc, default branch + PRs | Open source dependencies and license risk |
+| **IaC + Secrets** | Ad hoc, default branch + PRs | Infrastructure misconfigurations and hardcoded secrets |
 | **SAST + Policy** | Ad hoc, default branch only | First-party code, compiled and scanned against your Veracode policy |
+
+A plain feature branch with no open PR is not scanned by default. Opt a repo into scanning every feature branch push with `veracodePipeline(scanFeatureBranches: true)`.
 
 Scans run on a dedicated pipeline beside each team's build. No changes to existing CI. No risk to existing deployments. The only thing added to a product repo is a 2-line `Jenkinsfile`.
 
@@ -78,10 +80,13 @@ library-repo/               → push as "veracode-pipeline" repo, tag v1
   README.md                       usage, overrides, versioning, agent setup
 
 platform-automation/        → push as "jenkins-platform" repo
-  rollout.py                      one-shot setup script (dummy values, safe to commit)
-  veracode-onboard.groovy         creates org folders, mints SCA tokens
+  rollout.py / .sh / .ps1         one-shot setup script, three equivalent variants (dummy values, safe to commit)
+  veracode-onboard.groovy         creates org folders, mints SCA tokens, ad hoc discovery only
   bulk_add_jenkinsfile.py         bulk PR rollout across orgs (--delete to reverse)
-  jenkins.casc.yaml               JCasC alternative to rollout.py
+  trigger-scan.sh / .ps1          ad hoc scan trigger (org / repo / branch), the CLI equivalent of the Jenkins UI buttons
+  jenkins.casc.yaml               JCasC alternative to rollout.py steps 2-3
+  bind-sca-tokens.groovy          legacy, superseded by veracode-onboard.groovy
+  orgfolders.jobdsl.groovy        legacy, superseded by veracode-onboard.groovy
   README.md                       step-by-step manual guide
 
 consumer-repo-files/        → added to each scanned repo by the bulk-PR script

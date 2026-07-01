@@ -127,7 +127,8 @@ Re-running is safe - folders and credentials converge, the SCA token is rotated 
 export GITHUB_TOKEN=<push-pat-with-repo-scope>
 
 # Dry run first
-python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --dry-run
+python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 \
+    --skip-archived --skip-forks --dry-run
 
 # Execute
 python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 \

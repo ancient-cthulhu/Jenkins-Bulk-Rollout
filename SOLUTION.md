@@ -32,6 +32,7 @@ Connection legend:
 - **C8** SAST/Policy upload to the per-repo Veracode app profile.
 - **C9** Controller dispatches builds to the static agents.
 - **C10** One-time per org: PRs add the 2-line `Jenkinsfile` (separate from the controller).
+- **C11** Secrets flow from the Jenkins credential store to the controller (encrypted at rest, folder-scoped per org for the SCA token).
 
 ---
 
@@ -85,7 +86,7 @@ of every org it touches. Jenkins uses it for three things:
 
 ## 4. Requirements
 
-**Jenkins plugins:** `pipeline-groovy-lib`, `workflow-aggregator`, `workflow-multibranch`, `pipeline-model-definition`, `cloudbees-folder`, `github-branch-source`, `credentials`, `credentials-binding`, `plain-credentials`, `configuration-as-code`, `ws-cleanup`, `timestamper`.
+**Jenkins plugins:** `pipeline-groovy-lib`, `workflow-aggregator`, `workflow-multibranch`, `pipeline-model-definition`, `cloudbees-folder`, `github-branch-source`, `credentials`, `credentials-binding`, `plain-credentials`, `configuration-as-code`, `ws-cleanup`, `timestamper`, `docker-workflow` (required for containerized SAST autopackaging -- see section 6 and `library-repo/README.md`, "Agent requirements for SAST packaging").
 > The agents attach over SSH or JNLP, so the `kubernetes` plugin is not needed.
 
 **Credentials:**
@@ -156,7 +157,7 @@ Per org, run the bulk-PR script (dry-run first), then merge:
 
 ```bash
 export GITHUB_TOKEN=<push-token>
-python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --dry-run
+python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --skip-archived --skip-forks --dry-run
 python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --skip-archived --skip-forks --yes
 ```
 
@@ -235,14 +236,17 @@ This table describes what a scan covers once it runs, not when it runs automatic
 
 | Context | SCA | IaC/secrets | SAST/Policy |
 |---------|-----|-------------|-------------|
-| PR / feature branch scanned | yes | yes | no |
+| PR (open pull request) scanned | yes | yes | no |
 | Default branch scanned | yes | yes | yes |
+| Plain feature branch (no open PR) scanned | no* | no* | no |
+
+\* Unless `scanFeatureBranches: true` (or `VERACODE_SCAN_FEATURE_BRANCHES`) is set, in which case SCA and IaC/secrets also run there.
 
 - SCA and IaC/secrets are non-gating by default (report, do not fail the build).
 - SAST runs only on the default branch, detected via `BRANCH_IS_PRIMARY`; PRs are always excluded.
 - App profile per repo = `org/repo`. SCA results land in the per-org workspace selected by that org's token.
 - SAST autopackages by detecting the language and pulling a Docker container image matching the toolchain (Maven, .NET SDK, Node, etc.) - same approach as the Veracode GitHub Actions workflow on `ubuntu-latest`. Requires Docker on the agent. See `library-repo/README.md` for the full language-to-image map.
-- Incomplete or stuck SAST scans on the platform are cleared automatically via `-deleteincompletescan 1` on each upload.
+- Incomplete SAST scans (failed, canceled, or no modules defined) are cleared automatically via `-deleteincompletescan 1` on each upload. A scan that is actively running on the platform (Pre-Scan Success) is not deleted; the wrapper returns exit code 2 and the build is marked unstable with a message to re-trigger once the in-progress scan completes.
 
 ### Jenkins UI buttons
 

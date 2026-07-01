@@ -581,7 +581,7 @@ function Main {
 
 Next step -- open Jenkinsfile PRs across each org:
 
-  python3 bulk_add_jenkinsfile.py --orgs $orgsArg --lib-version $LIBRARY_VERSION --dry-run
+  python3 bulk_add_jenkinsfile.py --orgs $orgsArg --lib-version $LIBRARY_VERSION --skip-archived --skip-forks --dry-run
   python3 bulk_add_jenkinsfile.py --orgs $orgsArg --lib-version $LIBRARY_VERSION --skip-archived --skip-forks --yes
 
 (Ask for a bulk_add_jenkinsfile.sh / .ps1 port if this client also needs

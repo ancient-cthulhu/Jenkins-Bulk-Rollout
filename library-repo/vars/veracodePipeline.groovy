@@ -627,9 +627,15 @@ private void runPolicyScan() {
                     -filepath "verascan" \
                     -version "$BRANCH_NAME $BUILD_NUMBER"
                 RC=$?
-                # Exit code 2 means a scan is already in progress (Pre-Scan Success
-                # or similar). With -deleteincompletescan 2 this should be rare but
-                # can still happen if the platform scan is actively running.
+                # Exit code 2 means the wrapper found an existing scan on the
+                # platform it would not delete and could not proceed past.
+                # -deleteincompletescan 1 (set above) only auto-deletes scans
+                # that are incomplete, failed, canceled, or have no modules
+                # defined -- it deliberately does NOT delete a scan that is
+                # actively in progress (Pre-Scan Success or later). That is
+                # by design: with ad hoc triggering, two people can kick off
+                # overlapping scans on the same app profile, and we do not
+                # want one build silently deleting another's in-progress work.
                 # Treat it as non-fatal -- the platform already has the artifacts.
                 if [ "$RC" -eq 2 ]; then
                     echo "WARNING: A scan is already in progress on the platform for $VC_APP_NAME."

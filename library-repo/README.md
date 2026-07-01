@@ -71,11 +71,11 @@ Rule of thumb: if the difference is a value, pass an override and keep one versi
 
 | Scan | When | Input | Gating |
 |------|------|-------|--------|
-| Agent-Based SCA | every build | checked-out source | non-gating (skips if `srcclr-api-token` absent) |
-| Container/IaC/Secrets | every build | checked-out source (`sourceDir`) | non-gating by default |
+| Agent-Based SCA | default branch + PRs (any triggered build of them); feature branches only if `scanFeatureBranches: true` | checked-out source | non-gating (skips if `srcclr-api-token` absent) |
+| Container/IaC/Secrets | default branch + PRs (any triggered build of them); feature branches only if `scanFeatureBranches: true` | checked-out source (`sourceDir`) | non-gating by default |
 | Package + Policy (SAST) | repo default branch only (post-merge, not PRs) | autopackaged build output, or `buildSteps` output in `verascan/` | per your Veracode policy |
 
-SCA and IaC/secrets are source-level and need no build. SAST autopackages a Veracode-appropriate (debug) build by default, or runs a repo-supplied `buildSteps` closure (see "Complex builds"); either way its agent needs the language toolchain. SAST runs only on the repo's default branch (detected via `BRANCH_IS_PRIMARY`), which means after a merge, never on PRs.
+SCA and IaC/secrets are source-level and need no build; they run on the default branch and on PRs, and on other feature branches too if `scanFeatureBranches` is enabled. SAST autopackages a Veracode-appropriate (debug) build by default, or runs a repo-supplied `buildSteps` closure (see "Complex builds"); either way its agent needs the language toolchain. SAST runs only on the repo's default branch (detected via `BRANCH_IS_PRIMARY`), which means after a merge, never on PRs.
 
 The library auto-detects the agent OS with `isUnix()` and runs the bash or PowerShell path accordingly, so one library serves Linux and Windows agents.
 

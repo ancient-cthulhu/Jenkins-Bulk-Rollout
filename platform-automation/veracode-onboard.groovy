@@ -9,6 +9,11 @@
 //   5. Apply NoTriggerOrganizationFolderProperty so discovery only auto-builds
 //      main/master -- PR branches and feature branches are registered but never
 //      auto-queued, preventing executor starvation and stale pending checks.
+//   6. Strip any PeriodicFolderTrigger. Discovery is ad hoc only: it happens
+//      when someone clicks "Scan Organization Now" / "Scan Repository Now" in
+//      the Jenkins UI, or runs trigger-scan.sh/.ps1. Jenkins never re-indexes
+//      an org folder on its own schedule. The only automatic index is the
+//      one-time pass Jenkins performs when an org folder is first created.
 //
 // Run as a SYSTEM (trusted) script: Manage Jenkins > Script Console for a
 // one-off, or a freestyle admin job to repeat/schedule. NOT Job DSL, NOT
@@ -203,7 +208,6 @@ OrganizationFolder ensureOrgFolder(Folder parent, String org) {
     of.navigators.replace(nav)
 
     of.projectFactories.replace(new WorkflowMultiBranchProjectFactory())
-    of.addTrigger(new PeriodicFolderTrigger('1d'))
     of.orphanedItemStrategy = new DefaultOrphanedItemStrategy(true, '7', '50')
     of.save()
     return of
@@ -216,6 +220,20 @@ void ensureNoTriggerProperty(OrganizationFolder of) {
     of.getProperties().removeIf { it instanceof NoTriggerOrganizationFolderProperty }
     of.addProperty(new NoTriggerOrganizationFolderProperty('^(main|master)$'))
     of.save()
+}
+
+// Always applied whether the folder is new or already exists. This deployment
+// is ad hoc only: discovery and scanning both happen via the Jenkins UI
+// buttons or trigger-scan.sh/.ps1, never on a schedule. Strips any
+// PeriodicFolderTrigger so a folder created by an older version of this
+// script (or by the legacy orgfolders.jobdsl.groovy seed) converges to the
+// same no-schedule behavior on the next run.
+void ensureNoPeriodicTrigger(OrganizationFolder of) {
+    def stale = of.triggers.findAll { k, v -> v instanceof PeriodicFolderTrigger }
+    if (stale) {
+        stale.each { k, v -> of.removeTrigger(v.getDescriptor()) }
+        of.save()
+    }
 }
 
 void upsertFolderToken(AbstractFolder folder, String id, String value) {
@@ -244,6 +262,7 @@ ORGS.each { org ->
     try {
         def of    = ensureOrgFolder(parent, org)
         ensureNoTriggerProperty(of)
+        ensureNoPeriodicTrigger(of)
         def wsId  = ensureWorkspace(org)
         def token = freshJenkinsToken(wsId, org)
         upsertFolderToken(of, SCA_CRED_ID, token)

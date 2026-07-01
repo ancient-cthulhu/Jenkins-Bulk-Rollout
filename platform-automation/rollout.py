@@ -377,7 +377,7 @@ def jenkins_upsert_credential(cred_xml):
 
 
 # ==============================================================================
-# STEP 1 + 2: GitHub repos
+# STEP 1: GitHub repos
 # ==============================================================================
 
 def step_github_repos():
@@ -400,7 +400,7 @@ def step_github_repos():
 
 
 # ==============================================================================
-# STEP 3: Jenkins credentials
+# STEP 2: Jenkins credentials
 # ==============================================================================
 
 def step_jenkins_credentials():
@@ -444,7 +444,7 @@ def step_jenkins_credentials():
 
 
 # ==============================================================================
-# STEP 4: Configure GitHub Server (API rate-limit registration only)
+# STEP 3: Configure GitHub Server (API rate-limit registration only)
 # ==============================================================================
 #
 # NOTE: manageHooks is intentionally False. This deployment is egress-only --
@@ -456,7 +456,7 @@ def step_jenkins_credentials():
 # not open any inbound path and does not schedule anything on its own.
 
 def step_github_server():
-    print("\n=== Step 4: Configure GitHub Server (no webhook registration) ===")
+    print("\n=== Step 3: Configure GitHub Server (no webhook registration) ===")
 
     api_url = GITHUB_API if GITHUB_API != "https://api.github.com" else "https://api.github.com"
 
@@ -491,11 +491,11 @@ println "GitHub Server registered: {api_url} (manageHooks=false, no inbound webh
 
 
 # ==============================================================================
-# STEP 5: Register the shared library
+# STEP 4: Register the shared library
 # ==============================================================================
 
 def step_register_library():
-    print("\n=== Step 5: Register shared library in Jenkins ===")
+    print("\n=== Step 4: Register shared library in Jenkins ===")
 
     library_url = f"https://github.com/{PLATFORM_ORG}/veracode-pipeline.git"
 
@@ -607,7 +607,7 @@ def main():
 
 Next step -- open Jenkinsfile PRs across each org:
 
-  python3 bulk_add_jenkinsfile.py --orgs {" ".join(SCAN_ORGS)} --lib-version {LIBRARY_VERSION} --dry-run
+  python3 bulk_add_jenkinsfile.py --orgs {" ".join(SCAN_ORGS)} --lib-version {LIBRARY_VERSION} --skip-archived --skip-forks --dry-run
   python3 bulk_add_jenkinsfile.py --orgs {" ".join(SCAN_ORGS)} --lib-version {LIBRARY_VERSION} --skip-archived --skip-forks --yes
 
 Review and merge the PRs. Jenkins will start scanning on the next push.
