@@ -124,7 +124,8 @@ Re-running is safe - folders and credentials converge, the SCA token is rotated 
 export GITHUB_TOKEN=<push-pat-with-repo-scope>
 
 # Dry run first
-python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --dry-run
+python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 \
+    --skip-archived --skip-forks --dry-run
 
 # Execute
 python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 \
@@ -174,7 +175,9 @@ If Docker is not available, install the language toolchain directly on the agent
 
 | File | Purpose |
 |------|---------|
-| `rollout.py` | Safe template with dummy values - commit this. Clients copy to `rollout.example.py`, fill in real values, run it |
+| `rollout.py` | Edit the CONFIG block directly and run it (`python3 rollout.py`). Real secrets always come from environment variables, never from this file -- see Quickstart above |
+| `rollout.sh` | Bash equivalent of `rollout.py`, same convention -- for teams without Python |
+| `rollout.ps1` | PowerShell equivalent of `rollout.py`, same convention -- for teams without Python |
 | `jenkins.casc.yaml` | JCasC: registers the shared library and root credentials (alternative to rollout.py steps 2-3) |
 | `veracode-onboard.groovy` | System Groovy script: creates org folders, mints + binds SCA tokens |
 | `bulk_add_jenkinsfile.py` | Opens PRs adding the 2-line Jenkinsfile to every repo in an org. `--delete` to reverse |

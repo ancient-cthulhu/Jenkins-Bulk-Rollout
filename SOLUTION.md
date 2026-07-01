@@ -8,7 +8,7 @@ Open-source Jenkins, many orgs. Veracode SCA, IaC/secrets, and SAST run automati
 
 We add Veracode scanning as a separate pipeline that runs beside each team's build, triggered by the same Git events. All logic lives in one shared library; each repo gets a 2-line `Jenkinsfile` that calls it. Jenkins Organization Folders auto-discover every repo per org.
 
-- **SCA** (dependencies) and **IaC/secrets**: every build, on the checked-out source. No build needed, so they cover every repo immediately.
+- **SCA** (dependencies) and **IaC/secrets**: default branch and PR builds, on the checked-out source (feature-branch pushes with no open PR are skipped unless `scanFeatureBranches` is enabled). No build needed, so they cover every eligible repo immediately.
 - **SAST**: the repo's default branch only, after a merge (never on PRs). Needs a build, so it is phased in per org.
 - **SCM auth**: a single read-only GitHub PAT (service account) lets Jenkins discover and check out repos across the orgs. This is the fast path for now; per-org GitHub Apps are a planned hardening step (see the note in section 4).
 
@@ -32,6 +32,7 @@ Connection legend:
 - **C8** SAST/Policy upload to the per-repo Veracode app profile.
 - **C9** Controller dispatches builds to the static agents.
 - **C10** One-time per org: PRs add the 2-line `Jenkinsfile` (separate from the controller).
+- **C11** Secrets flow from the Jenkins credential store to the controller (encrypted at rest, folder-scoped per org for the SCA token).
 
 ---
 
@@ -68,7 +69,7 @@ between platform infrastructure and product code.
 The two repos live inside the org being scanned. One PAT, one org. Fine for a
 pilot or single-org deployment.
 
-In either case, set `PLATFORM_ORG` in `rollout.example.py` to whichever org
+In either case, set `PLATFORM_ORG` in `rollout.py` to whichever org
 hosts these two repos, and set `SCAN_ORGS` to the list of orgs Jenkins will scan.
 They can be the same value or different.
 
@@ -85,7 +86,7 @@ of every org it touches. Jenkins uses it for three things:
 
 ## 4. Requirements
 
-**Jenkins plugins:** `pipeline-groovy-lib`, `workflow-aggregator`, `workflow-multibranch`, `pipeline-model-definition`, `cloudbees-folder`, `github-branch-source`, `credentials`, `credentials-binding`, `plain-credentials`, `configuration-as-code`, `ws-cleanup`, `timestamper`.
+**Jenkins plugins:** `pipeline-groovy-lib`, `workflow-aggregator`, `workflow-multibranch`, `pipeline-model-definition`, `cloudbees-folder`, `github-branch-source`, `credentials`, `credentials-binding`, `plain-credentials`, `configuration-as-code`, `ws-cleanup`, `timestamper`, `docker-workflow` (required for containerized SAST autopackaging -- see section 6 and `library-repo/README.md`, "Agent requirements for SAST packaging").
 > The agents attach over SSH or JNLP, so the `kubernetes` plugin is not needed.
 
 **Credentials:**
@@ -154,7 +155,7 @@ Per org, run the bulk-PR script (dry-run first), then merge:
 
 ```bash
 export GITHUB_TOKEN=<push-token>
-python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --dry-run
+python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --skip-archived --skip-forks --dry-run
 python3 bulk_add_jenkinsfile.py --orgs <YOUR-ORG> --lib-version v1 --skip-archived --skip-forks --yes
 ```
 
@@ -231,14 +232,17 @@ script for the new org. The scan PAT must be a member of the new org. Nothing el
 
 | Trigger | SCA | IaC/secrets | SAST/Policy |
 |---------|-----|-------------|-------------|
-| PR / feature branch | yes | yes | no |
+| PR (open pull request) | yes | yes | no |
 | Merge to default branch | yes | yes | yes |
+| Push to a plain feature branch (no open PR) | no* | no* | no |
+
+\* The webhook still triggers a build for the branch (`BranchDiscoveryTrait` discovers it), but the SCA/IaC stage skips unless `scanFeatureBranches: true` (or `VERACODE_SCAN_FEATURE_BRANCHES`) is set.
 
 - SCA and IaC/secrets are non-gating by default (report, do not fail the build).
 - SAST runs only on the default branch, detected via `BRANCH_IS_PRIMARY`; PRs are always excluded.
 - App profile per repo = `org/repo`. SCA results land in the per-org workspace selected by that org's token.
 - SAST autopackages by detecting the language and pulling a Docker container image matching the toolchain (Maven, .NET SDK, Node, etc.) - same approach as the Veracode GitHub Actions workflow on `ubuntu-latest`. Requires Docker on the agent. See `library-repo/README.md` for the full language-to-image map.
-- Incomplete or stuck SAST scans on the platform are cleared automatically via `-deleteincompletescan 1` on each upload.
+- Incomplete SAST scans (failed, canceled, or no modules defined) are cleared automatically via `-deleteincompletescan 1` on each upload. A scan that is actively running on the platform (Pre-Scan Success) is not deleted; the wrapper returns exit code 2 and the build is marked unstable with a message to re-trigger once the in-progress scan completes. This matters more here than in a manually-triggered setup: with webhook-driven builds, two pushes close together can produce overlapping scans on the same app profile.
 
 ### Jenkins UI buttons
 

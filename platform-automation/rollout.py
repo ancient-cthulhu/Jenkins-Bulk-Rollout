@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """
-rollout.example.py -- Template for rollout.py.
+rollout.py -- One-shot Veracode + Jenkins platform setup.
 
-Copy this file to rollout.py, fill in the CONFIG section, and run it.
-This file is safe to commit -- it contains no real credentials.
+Edit the CONFIG block below (PLATFORM_ORG, SCAN_ORGS, JENKINS_URL, etc.),
+then run:
 
-See rollout.py for the working version.
+    python3 rollout.py
+
+Real secrets (GITHUB_TOKEN, VC_API_ID, VC_API_KEY, JENKINS_TOKEN) are never
+stored in this file -- they are always read from environment variables. The
+CONFIG block only holds non-secret values (org names, URLs, usernames). If
+you'd rather not leave your edited org names/URLs in your working copy of a
+shared repo, copy this file out first, or use `git update-index
+--skip-worktree platform-automation/rollout.py` to keep local edits out of
+your commits. See platform-automation/README.md for the shell (rollout.sh)
+and PowerShell (rollout.ps1) equivalents, same convention.
 """
 
 import base64
@@ -38,9 +47,16 @@ SCAN_ORGS = [
 ]
 
 # --- Jenkins folder (optional) ---
-# If specified, Jenkins organization folders and credentials will be created
-# within this folder path instead of at the top level.
-# Leave empty for top-level creation. Example: "veracode" or "veracode/github"
+# Only affects where CREDENTIALS are stored: set it to move veracode-api-id,
+# veracode-api-key, and scm-readonly into a folder-scoped credential store
+# instead of the global one. Leave empty to store credentials at the global
+# (root) level. Example: "veracode" or "veracode/github"
+#
+# Org folders are unaffected by this default. They always live under a
+# 'veracode' parent folder (PARENT_FOLDER in veracode-onboard.groovy), never
+# at the Jenkins root. Setting JENKINS_FOLDER here also overrides that
+# PARENT_FOLDER, so org folders and credentials move together -- but leaving
+# this empty does NOT put org folders at the top level, only credentials.
 JENKINS_FOLDER = ""
 
 # --- Library version ---
@@ -368,7 +384,7 @@ def jenkins_upsert_credential(cred_xml):
 
 
 # ==============================================================================
-# STEP 1 + 2: GitHub repos
+# STEP 1: GitHub repos
 # ==============================================================================
 
 def step_github_repos():
@@ -391,7 +407,7 @@ def step_github_repos():
 
 
 # ==============================================================================
-# STEP 3: Jenkins credentials
+# STEP 2: Jenkins credentials
 # ==============================================================================
 
 def step_jenkins_credentials():
@@ -435,7 +451,7 @@ def step_jenkins_credentials():
 
 
 # ==============================================================================
-# STEP 4: Configure GitHub Server (enables webhook auto-registration)
+# STEP 3: Configure GitHub Server (enables webhook auto-registration)
 # ==============================================================================
 
 def step_github_server():
@@ -446,7 +462,7 @@ def step_github_server():
     runs its first scan -- without it, no webhooks get created and builds
     only trigger on the daily periodic re-index.
     """
-    print("\n=== Step 4: Configure GitHub Server ===")
+    print("\n=== Step 3: Configure GitHub Server ===")
 
     api_url = GITHUB_API if GITHUB_API != "https://api.github.com" else "https://api.github.com"
 
@@ -481,11 +497,11 @@ println "GitHub Server registered: {api_url} (manageHooks=true, credential=scm-r
 
 
 # ==============================================================================
-# STEP 5: Register the shared library
+# STEP 4: Register the shared library
 # ==============================================================================
 
 def step_register_library():
-    print("\n=== Step 5: Register shared library in Jenkins ===")
+    print("\n=== Step 4: Register shared library in Jenkins ===")
 
     library_url = f"https://github.com/{PLATFORM_ORG}/veracode-pipeline.git"
 
@@ -597,7 +613,7 @@ def main():
 
 Next step -- open Jenkinsfile PRs across each org:
 
-  python3 bulk_add_jenkinsfile.py --orgs {" ".join(SCAN_ORGS)} --lib-version {LIBRARY_VERSION} --dry-run
+  python3 bulk_add_jenkinsfile.py --orgs {" ".join(SCAN_ORGS)} --lib-version {LIBRARY_VERSION} --skip-archived --skip-forks --dry-run
   python3 bulk_add_jenkinsfile.py --orgs {" ".join(SCAN_ORGS)} --lib-version {LIBRARY_VERSION} --skip-archived --skip-forks --yes
 
 Review and merge the PRs. Jenkins will start scanning on the next push.

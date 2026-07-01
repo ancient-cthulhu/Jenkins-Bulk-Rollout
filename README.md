@@ -14,9 +14,11 @@ Every repo that opts in gets three scans running automatically:
 
 | Scan | When | What it covers |
 |------|------|----------------|
-| **SCA** (Software Composition Analysis) | Every push, every branch | Open source dependencies and license risk |
-| **IaC + Secrets** | Every push, every branch | Infrastructure misconfigurations and hardcoded secrets |
+| **SCA** (Software Composition Analysis) | Default branch + PR builds | Open source dependencies and license risk |
+| **IaC + Secrets** | Default branch + PR builds | Infrastructure misconfigurations and hardcoded secrets |
 | **SAST + Policy** | Default branch only (post-merge) | First-party code, compiled and scanned against your Veracode policy |
+
+A push to the webhook still triggers a Jenkins build for any branch, but SCA and IaC/secrets only run on the default branch and on PRs by default. Opt a repo into scanning every feature branch push with `veracodePipeline(scanFeatureBranches: true)`.
 
 Scans run on a dedicated pipeline beside each team's build. No changes to existing CI. No risk to existing deployments. The only thing added to a product repo is a 2-line `Jenkinsfile`.
 
@@ -67,16 +69,17 @@ library-repo/               → push as "veracode-pipeline" repo, tag v1
   README.md                       usage, overrides, versioning, agent setup
 
 platform-automation/        → push as "jenkins-platform" repo
-  rollout.py                      one-shot setup script (dummy values, safe to commit)
+  rollout.py / .sh / .ps1         one-shot setup script, three equivalent variants, edited in place (no secrets in the file)
   veracode-onboard.groovy         creates org folders, mints SCA tokens
   bulk_add_jenkinsfile.py         bulk PR rollout across orgs (--delete to reverse)
-  jenkins.casc.yaml               JCasC alternative to rollout.py
+  jenkins.casc.yaml               JCasC alternative to rollout.py steps 2-3
   README.md                       step-by-step manual guide
 
 consumer-repo-files/        → added to each scanned repo by the bulk-PR script
   Jenkinsfile                     2 lines
-  .veracode.yml                   optional per-repo scan tuning
 ```
+
+Per-repo tuning (source dir, app name, custom build steps, library version) is done directly in that repo's `Jenkinsfile` via `veracodePipeline(...)` config, not a separate config file. See `library-repo/README.md` for the full option list.
 
 ---
 

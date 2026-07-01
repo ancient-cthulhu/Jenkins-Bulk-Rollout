@@ -64,7 +64,7 @@
   <text x="832" y="234" font-size="13" font-weight="700" fill="#0f172a">Product repos (existing)</text>
   <text x="832" y="256" font-size="12" fill="#475569">App teams' code, unchanged except</text>
   <text x="832" y="274" font-size="12" fill="#475569">for one 2-line Jenkinsfile we add</text>
-  <text x="832" y="296" font-size="12" fill="#475569">(+ optional .veracode.yml)</text>
+  <text x="832" y="296" font-size="12" fill="#475569">(tuning via veracodePipeline() config)</text>
 
   <!-- Veracode -->
   <rect x="800" y="480" width="290" height="150" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
