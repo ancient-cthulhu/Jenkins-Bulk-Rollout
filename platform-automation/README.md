@@ -98,7 +98,7 @@ export VERACODE_API_ID=<your-api-id>
 export VERACODE_API_KEY=<your-api-key>
 export SCM_SCAN_USER=<github-username>
 export SCM_SCAN_TOKEN=<github-pat>
-export PLATFORM_ORG=<your-github-org>
+export VERACODE_LIBRARY_REPO_URL=https://github.com/<YOUR-ORG>/veracode-pipeline.git
 ```
 
 ### Step 4 - Run veracode-onboard.groovy
@@ -182,7 +182,7 @@ If Docker is not available, install the language toolchain directly on the agent
 | `rollout.py` | Safe template with dummy values - commit this. Copy locally to `rollout.example.py` (gitignored), fill in real values, run the copy |
 | `rollout.sh` | Bash equivalent of `rollout.py`, same convention (copy to `rollout.example.sh`) -- for teams without Python |
 | `rollout.ps1` | PowerShell equivalent of `rollout.py`, same convention (copy to `rollout.example.ps1`) -- for teams without Python |
-| `jenkins.casc.yaml` | JCasC: registers the shared library and root credentials (alternative to rollout.py steps 2-3). Requires `PLATFORM_ORG` set as an env var before applying |
+| `jenkins.casc.yaml` | JCasC: registers the shared library and root credentials (alternative to rollout.py steps 2-3). Requires `VERACODE_LIBRARY_REPO_URL` set as an env var before applying |
 | `veracode-onboard.groovy` | System Groovy script: creates org folders, mints + binds SCA tokens. No automatic trigger is configured -- ad hoc only |
 | `bulk_add_jenkinsfile.py` | Opens PRs adding the 2-line Jenkinsfile to every repo in an org. `--delete` to reverse |
 | `trigger-scan.sh` | Ad hoc scan trigger (org / repo / branch) from a terminal, same effect as the Jenkins UI buttons |
